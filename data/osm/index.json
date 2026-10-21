@@ -1,0 +1,15 @@
+{
+ "extracts": [
+  {
+   "file": "giebelstadt-essfeld.json",
+   "name": "Giebelstadt und Eßfeld",
+   "bbox": [
+    49.628,
+    9.909,
+    49.696,
+    9.995
+   ],
+   "savedAt": "2026-10-21"
+  }
+ ]
+}
