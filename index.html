@@ -1307,6 +1307,7 @@ function renderMode() {
     ? 'Prüfung: genau so viele Richtungswechsel wie die PO verlangt, keine weiteren Abzweige. Geht das nicht, wird der Trail als schwerer markiert.'
     : 'Training: höchstens eine Entscheidungsstelle mehr als die PO verlangt. Geht das nicht, wird der Trail als schwerer markiert.';
   updateExamBar();
+  renderPlaces();   // „Nur Ort … neu planen“ gibt es nur im Prüfungsmodus
 }
 document.querySelectorAll('[data-mode]').forEach(b => b.addEventListener('click', () => {
   if (planMode === b.dataset.mode) return;
@@ -1406,6 +1407,11 @@ function renderPlaces() {
       if (p.center) map.flyTo([p.center.lat, p.center.lon], 15, { duration: 0.6 });
     };
     row.append(badge, name, sel, x);
+    if (planMode === 'pruefung' && state.exam && (state.exam.trails.some(t => t.place === p.id) || state.teams.some(t => t.place === p.id))) {
+      const rp = document.createElement('button'); rp.type = 'button'; rp.className = 'small replan';
+      rp.textContent = `Nur Ort ${p.id} neu planen`; rp.onclick = () => replanPlace(p.id);
+      row.append(rp);
+    }
     host.append(row);
   }
   $('#addPlace').disabled = state.places.length >= Pruefung.PLACE_IDS.length;
@@ -1854,7 +1860,7 @@ function drawExam(fit = false) {
     const color = COLORS[i % COLORS.length], ll = t.ll;
     bounds.push(...ll);
     L.polyline(ll, { color: '#ffffff', weight: 9, opacity: 0.9 }).addTo(trailLayer);
-    L.polyline(ll, { color, weight: 5, opacity: 1 }).addTo(trailLayer).bindTooltip(`Trail ${i + 1} · ${t.level} · ${t.length} m`, { sticky: true });
+    L.polyline(ll, { color, weight: 5, opacity: 1 }).addTo(trailLayer).bindTooltip(`Trail ${i + 1} · ${t.level}${examPlaceSuffix(state.exam, t)} · ${t.length} m`, { sticky: true });
     t.steps.filter(s => s.kind === 'turn').forEach(s => {
       L.marker(llAtDist(ll, s.at), { icon: L.divIcon({ className: '', html: `<div class="lf-mark lf-turn" style="background:${color}"></div>`, iconSize: [12, 12], iconAnchor: [6, 6] }), keyboard: false })
         .bindTooltip(`Trail ${i + 1}, ${s.at} m: ${s.text}`).addTo(trailLayer);
@@ -1902,7 +1908,31 @@ async function replaceTrail(i, btn) {
     if (btn.isConnected) { btn.disabled = false; btn.textContent = 'Ersetzen'; }
   }
 }
+// Nur einen Ort neu planen: Trails, Häkchen und Zuteilung der anderen Orte bleiben; sie sind dabei Hindernisse
+async function replanPlace(pid) {
+  const ex = state.exam, place = state.places.find(p => p.id === pid);
+  if (!ex || !place) return;
+  if (!confirm(`Nur ${placeLabel(place)} neu planen? Trails, Häkchen und Zuteilung dieses Orts gehen verloren, die anderen Orte bleiben.`)) return;
+  const btn = $('#planBtn'); btn.disabled = true;
+  try {
+    if (!state.teams.some(t => t.place === pid)) { setStatus(`Ort ${pid} hat keine Teams: bei den Teams Ort ${pid} auswählen. Der bisherige Stand bleibt.`, true); return; }
+    const r = await planPlaces([pid], 'pruefung', ex.trails.filter(t => t.place !== pid).map(t => t.ll));
+    if (!r.ok) { setStatus(`${r.msg} Der bisherige Stand bleibt.`, true); return; }
+    const snap = { id: place.id, name: place.name, center: place.center, terrain: place.terrain };
+    state.exam = Pruefung.replacePlaceTrails(ex, pid, r.plan.map(snapshot), snap);
+    state.examSeen = state.exam.trails.map(() => new Set());
+    for (const k of Object.keys(state.examPools || {})) if (k.startsWith(pid + '|')) delete state.examPools[k];
+    persistExam(); renderResults(); drawExam(true);
+    setStatus(`${placeLabel(place)} neu geplant: ${r.plan.length} Trail${r.plan.length === 1 ? '' : 's'}. Bitte abfahren und danach abhaken.`);
+  } catch (e) {
+    console.error(e);
+    setStatus(`Interner Fehler bei der Planung: ${e && e.message ? e.message : e}. Der bisherige Stand bleibt.`, true);
+  } finally { btn.disabled = false; }
+}
+// Ortszusatz im Prüfungsstand, nur wenn er mehrere Orte hat
+const examPlaceSuffix = (ex, t) => (ex.places.length > 1 ? ' · ' + placeLabel(Pruefung.placeOf(ex, t)) : '');
 function renderExam() {
+  renderPlaces();
   const ex = state.exam, host = $('#results');
   host.innerHTML = '';
   const h = document.createElement('h2'); h.textContent = '4 · Prüfungstrails'; host.append(h);
@@ -1916,7 +1946,7 @@ function renderExam() {
     const card = document.createElement('article'); card.className = 'card' + (t.checked ? ' checked' : '');
     card.innerHTML = `
       <div class="card-head"><span class="dot num" style="background:${COLORS[i % COLORS.length]}">${i + 1}</span>
-        <span class="name">Trail ${i + 1}</span><span class="chip">${esc(t.level)}</span>
+        <span class="name">Trail ${i + 1}${esc(examPlaceSuffix(ex, t))}</span><span class="chip">${esc(t.level)}</span>
         <span class="lay">legen bis <b>${layTime(t.level)}</b></span></div>
       <div class="stats"><span><b>${t.length}</b> m</span><span><b>${t.decisions}</b> Entscheidungsstelle${t.decisions === 1 ? '' : 'n'}, davon <b>${t.turns}</b> Richtungswechsel</span><span><b>${t.crossings}</b> Kreuzung${t.crossings === 1 ? '' : 'en'}</span><span>Suchzeit <b>${lv.searchMin}</b> min</span></div>
       <div class="streets"></div>
@@ -1992,7 +2022,7 @@ function renderAssign(host) {
     const body = document.createElement('tbody');
     ex.trails.forEach((t, i) => {
       const tr = document.createElement('tr');
-      const td0 = document.createElement('td'); td0.textContent = `${i + 1} · ${t.level}`;
+      const td0 = document.createElement('td'); td0.textContent = `${i + 1} · ${t.level}${examPlaceSuffix(ex, t)}`;
       const pick = fieldName => v => { Pruefung.setCell(ex.assign, i, fieldName, v); persistExam(); drawTable(); };
       const td1 = document.createElement('td'); td1.append(select(ex.names.vps, ex.assign[i].vp, pick('vp')));
       const td2 = document.createElement('td'); td2.append(select(ex.names.teams[t.level] || [], ex.assign[i].team, pick('team')));
