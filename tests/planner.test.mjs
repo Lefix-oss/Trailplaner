@@ -24,12 +24,18 @@ test('MT-I mit mehr Entscheidungsstellen als die PO erlaubt ist nicht PO-konform
   assert.equal(check(v, /höchstens 2 Entscheidungsstellen/).ok, false);
 });
 
-test('MT-I darf keine Straße mit Verkehr queren (auch keine Kreisstraße)', () => {
+// Reihe 1 nach Osten über Spalte 3 (Kreisstraße bzw. Bundesstraße)
+const crossing = (G, level) => ({ level, mode: 'pruefung', legs: [leg(G, [1, 2], [1, 3], 30), leg(G, [1, 3], [1, 4]), leg(G, [1, 4], [2, 4], 0, 88)] });
+
+test('MT-I darf eine Kreisstraße queren', () => {
   const G = grid();
-  // Reihe 1 nach Osten über die Kreisstraße (Spalte 3)
-  const tr = { level: 'MT-I', mode: 'pruefung', legs: [leg(G, [1, 2], [1, 3], 30), leg(G, [1, 3], [1, 4]), leg(G, [1, 4], [2, 4], 0, 88)] };
-  const v = Planner.validate(G, tr);
-  assert.equal(check(v, /gequert/).ok, false);
+  assert.equal(check(Planner.validate(G, crossing(G, 'MT-I')), /gequert/).ok, true);
+});
+
+test('MT-I und MT-II dürfen keine Bundesstraße queren', () => {
+  const G = Planner.buildGraph(gridOSM({ bundesstrasse: true }), CENTER, 1200);
+  Planner.setTerrain(G, 'ort', false, true);
+  for (const lv of ['MT-I', 'MT-II']) assert.equal(check(Planner.validate(G, crossing(G, lv)), /gequert/).ok, false, lv);
 });
 
 test('MT-II darf eine Kreisstraße queren', () => {

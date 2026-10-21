@@ -7,7 +7,7 @@ const kx = 111320 * Math.cos(CENTER.lat * Math.PI / 180), ky = 110574;
 const ll = (x, y) => ({ lat: CENTER.lat + y / ky, lon: CENTER.lon + x / kx });
 export const nodeId = (i, j) => 1000 + i * 10 + j;
 
-export function gridOSM() {
+export function gridOSM({ bundesstrasse = false } = {}) {
   const elements = [];
   const way = (id, ids, tags) => elements.push({ type: 'way', id, nodes: ids.map(([i, j]) => nodeId(i, j)), geometry: ids.map(([i, j]) => ll(j * STEP, i * STEP)), tags });
   for (let i = 0; i < N; i++) {
@@ -16,7 +16,8 @@ export function gridOSM() {
   }
   for (let j = 0; j < N; j++) {
     const col = [...Array(N)].map((_, i) => [i, j]);
-    way(200 + j, col, j === 3 ? { highway: 'tertiary', name: 'Kreisstraße', maxspeed: '50' } : { highway: 'residential', name: `Spalte ${j}` });
+    const main = bundesstrasse ? { highway: 'primary', ref: 'B 99' } : { highway: 'tertiary', name: 'Kreisstraße', maxspeed: '50' };
+    way(200 + j, col, j === 3 ? main : { highway: 'residential', name: `Spalte ${j}` });
   }
   const m = 60, e = (N - 1) * STEP + 60;
   const ring = [[-m, -m], [e, -m], [e, e], [-m, e], [-m, -m]].map(([x, y]) => ll(x, y));

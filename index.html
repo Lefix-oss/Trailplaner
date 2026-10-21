@@ -666,7 +666,7 @@ const Planner = (() => {
       visited.add(v);
       const deg = G.deg(v);
       const vIn = dirAtEnd(curO);
-      if (!crossOk(lvl, G, v)) { fail('würde Straße mit Verkehr queren'); return null; }
+      if (!crossOk(lvl, G, v)) { fail('würde Bundes- oder Staatsstraße queren'); return null; }
       if (deg >= 3) {
         if (acc - lastDecisionAt < MIN_DECISION_GAP) { fail('Entscheidungsstellen zu dicht'); return null; }
         if (decisions >= caps.maxDecisions) { fail('zu viele Entscheidungsstellen'); return null; }
@@ -755,8 +755,8 @@ const Planner = (() => {
   }
   // Zweiter Suchdurchgang: schwerer als die Vorgabe, aber nie über die PO-Grenzen hinaus
   const RELAXED = lvl => ({ maxTurns: lvl.maxTurns, maxDecisions: lvl.maxDecisions, noStraight: false });
-  // Querung nur von Straßen, die die Stufe auch begehen darf (MT-I: keine Straße mit Verkehr, MT-II: keine Hauptstraße)
-  const crossOk = (lvl, G, node) => lvl.allowed.includes(G.nodeCls.get(node) || 'quiet');
+  // Bundes- und Staatsstraßen quert nur MT-III; Wohn- und Kreisstraßen dürfen alle Stufen queren
+  const crossOk = (lvl, G, node) => lvl.allowed.includes('busy') || G.nodeCls.get(node) !== 'busy';
 
   function validate(G, tr, mode = tr.mode || 'training') {
     const lvl = LEVELS[tr.level];
@@ -815,10 +815,7 @@ const Planner = (() => {
       : { ok: turns <= tc.maxTurns && decisions <= tc.maxDecisions, label: `Vorgabe Training: höchstens ${tc.maxDecisions} Entscheidungsstellen` };
     checks.push({ ok: target.ok, soft: true, label: target.label, detail: `${decisions} Entscheidungsstelle${decisions === 1 ? '' : 'n'}, davon ${turns} Richtungswechsel` });
     const excess = Math.max(0, decisions - tc.maxDecisions) + Math.max(0, turns - tc.maxTurns) + (mode === 'pruefung' ? straightDecisions : 0);
-    if (!lvl.allowed.includes('busy')) {
-      const what = lvl.allowed.includes('medium') ? 'keine Hauptstraße' : 'keine Straße mit Verkehr';
-      add(!badCross, `${what} gequert (laut Karte)`, badCross ? `quert ${lvl.allowed.includes('medium') ? 'eine Hauptstraße' : 'eine Straße mit Verkehr'}` : 'keine Querung');
-    }
+    if (!lvl.allowed.includes('busy')) add(!badCross, 'keine Bundes- oder Staatsstraße gequert (laut Karte)', badCross ? 'quert eine Bundes- oder Staatsstraße' : 'keine Querung');
     if (lvl.minCrossings) add(crossings >= lvl.minCrossings, `Kreuzungen (mind. ${lvl.minCrossings})`, `${crossings} Kreuzung${crossings === 1 ? '' : 'en'}`);
     if (lvl.minTrafficM) {
       const tm = tr.legs.reduce((s, l) => s + trafficOfLeg(G, l), 0);
