@@ -153,6 +153,9 @@ ol.steps li.warn .t { color: var(--warn); font-size: 14px; }
 ol.steps li.end .t { font-weight: 600; }
 .opts { color: var(--muted); font-size: 13px; }
 .actions { display: flex; gap: 6px; flex-wrap: wrap; padding: 12px 14px 14px; }
+.card.checked { border-color: var(--ok); box-shadow: inset 4px 0 0 var(--ok); }
+.streets { padding: 6px 14px 0; font-size: 14px; color: var(--muted); }
+.exam-check { padding: 10px 14px 0; font-weight: 600; }
 .linkbtn { display: inline-block; font: 600 13px/1 var(--body); padding: 7px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); text-decoration: none; }
 .linkbtn:hover { border-color: var(--muted); }
 .wa + .wa { margin-top: 8px; }
@@ -542,7 +545,7 @@ const Planner = (() => {
     // Knoten, die an einer Straße mit viel Verkehr liegen (Querung)
     const busyNodes = new Set();
     for (const [n, nb] of adj) for (const wi of nb.values()) if (ways[wi].cls === 'busy') { busyNodes.add(n); break; }
-    return { segs, segAt, adj, ways, busyNodes, settlementAreas: polys.length, inSettlement, barriers: blockedNodes.size, terrain: 'ort', avoidLoops: true, deg: n => (adj.get(n) ? adj.get(n).size : 0), nearestDrive, toLatLon, center, radius };
+    return { segs, segAt, adj, ways, busyNodes, settlementAreas: polys.length, inSettlement, barriers: blockedNodes.size, terrain: 'ort', avoidLoops: true, deg: n => (adj.get(n) ? adj.get(n).size : 0), nearestDrive, toLatLon, fromLatLon: ll => P(ll[0], ll[1]), center, radius };
   }
 
   // ---------- Hilfen für orientierte Segmente ----------
@@ -831,6 +834,12 @@ const Planner = (() => {
     steps.push({ at: Math.round(acc), kind: 'end', text: `Ziel: Versteckperson auf ${curName}. Abholung mit dem Auto über ${nd.name}` });
     return steps;
   }
+  // Wegnamen an Start und Ende (für die Kopfzeile des Prüfungsbogens)
+  function endpointNames(G, tr) {
+    const first = tr.legs[0], last = tr.legs[tr.legs.length - 1];
+    const o0 = oriented(G.segs[first.seg], first.fwd), o1 = oriented(G.segs[last.seg], last.fwd);
+    return { start: wayName(G, subAt(o0, first.d0)), end: wayName(G, subAt(o1, last.d1)) };
+  }
   function subAt(o, d) { let i = 1; while (i < o.cum.length - 1 && o.cum[i] < d) i++; return o.sub[Math.min(i - 1, o.sub.length - 1)]; }
   function turnWord(a) {
     const s = a > 0 ? 'links' : 'rechts', x = Math.abs(a);
@@ -980,7 +989,7 @@ const Planner = (() => {
     if (s.blocked) return false;
     return true;
   }
-  return { LEVELS, buildGraph, prepare, setTerrain, pool, plans, alternatives, validate, describe, toGPX, rng, trailPts, compatible };
+  return { LEVELS, buildGraph, prepare, setTerrain, pool, plans, alternatives, validate, describe, endpointNames, toGPX, rng, trailPts, compatible };
 })();
 if (typeof module !== 'undefined') module.exports = Planner;
 
@@ -1087,6 +1096,7 @@ const state = {
   placeName: saved.placeName || '',
   teams: saved.teams || [{ name: 'Team 1', level: 'MT-I' }, { name: 'Team 2', level: 'MT-II' }, { name: 'Team 3', level: 'MT-II' }],
   graph: null, graphKey: '', pools: null, plans: [], active: 0, seed: Date.now() % 100000, planTeams: null,
+  exam: null, examPools: null, examSeen: [],   // Prüfungsstand: eingefrorene Trails, Häkchen, Zuteilung
 };
 if (saved.startTime) $('#startTime').value = saved.startTime;
 if (saved.radius) $('#radius').value = saved.radius;
@@ -1103,7 +1113,7 @@ function renderMode() {
 }
 document.querySelectorAll('[data-mode]').forEach(b => b.addEventListener('click', () => {
   if (planMode === b.dataset.mode) return;
-  planMode = b.dataset.mode; invalidate(); persist(); renderMode();
+  planMode = b.dataset.mode; invalidate(); persist(); renderMode(); renderResults();
 }));
 renderMode();
 const persist = () => store.set({ basemap: typeof baseName === 'undefined' ? saved.basemap : baseName, center: state.center, placeName: state.placeName, teams: state.teams, startTime: $('#startTime').value, radius: $('#radius').value, minDist: $('#minDist').value, terrain: $('#terrain').value, allowPaths: $('#allowPaths').checked, avoidLoops: $('#avoidLoops').checked, mode: typeof planMode === 'undefined' ? saved.mode : planMode });
@@ -1274,6 +1284,7 @@ function setStatus(t, err = false) { const s = $('#status'); s.textContent = t; 
 $('#planBtn').addEventListener('click', () => run(true));
 async function run(reseed = true) {
   if (!state.center) { setStatus('Bitte zuerst eine Ortschaft wählen oder auf der Karte tippen.', true); return; }
+  if (planMode === 'pruefung' && state.exam && !confirm('Neu planen verwirft den aktuellen Prüfungsstand. Fortfahren?')) return;
   const btn = $('#planBtn'); btn.disabled = true;
   try {
     const radius = +$('#radius').value;
@@ -1317,8 +1328,10 @@ async function run(reseed = true) {
       (harder ? ` Achtung: ${harder} Trail${harder === 1 ? ' ist' : 's sind'} schwerer als die Vorgabe (siehe Markierung).` : ' Alle treffen die Vorgabe genau.') +
       ' Vor Ort prüfen: Zugang, Sicht, Abholung, Verkehr.' +
       (state.graph.settlementAreas ? '' : ' Hinweis: Hier sind keine Wohngebiete kartiert, die Ortsgrenze ist nur geschätzt.'));
+      if (planMode === 'pruefung') startExam();
     }
     renderResults();
+    if (planMode === 'pruefung' && state.exam) drawExam(true);
   } catch (e) {
     console.error(e);
     setStatus(`Interner Fehler bei der Planung: ${e && e.message ? e.message : e}. Bitte melde mir diesen Text.`, true);
@@ -1410,8 +1423,100 @@ function pointAtDist(pts, d) {
   return pts[pts.length - 1];
 }
 
+// ---------- Prüfungsablauf ----------
+// Ein geplanter Trail wird eingefroren: danach zählt nur noch dieser Schnappschuss, nie mehr der OSM-Graph
+function snapshot(c) {
+  const G = state.graph, v = Planner.validate(G, c.tr), names = Planner.endpointNames(G, c.tr);
+  return {
+    level: c.tr.level, ll: c.v.pts.map(p => G.toLatLon(p)), length: Math.round(c.v.length),
+    turns: v.turns, decisions: v.decisions, crossings: v.crossings,
+    steps: Planner.describe(G, c.tr).map(s => ({ at: s.at, kind: s.kind, text: s.text, options: s.options || 0 })),
+    startStreet: names.start, endStreet: names.end, checked: false,
+  };
+}
+function examSettings() {
+  return { radius: +$('#radius').value, minDist: +$('#minDist').value, terrain: $('#terrain').value,
+    allowPaths: $('#allowPaths').checked, avoidLoops: $('#avoidLoops').checked, startTime: $('#startTime').value };
+}
+function startExam() {
+  const trails = state.plans[state.active].map(snapshot);
+  state.exam = {
+    format: Pruefung.FORMAT, version: Pruefung.VERSION, savedAt: null, placeName: state.placeName, center: state.center,
+    settings: examSettings(), date: new Date().toLocaleDateString('sv'), trails,
+    names: { teams: { 'MT-I': [], 'MT-II': [], 'MT-III': [] }, vps: [] }, assign: trails.map(() => ({ team: '', vp: '' })),
+  };
+  state.examSeen = trails.map(() => new Set());
+  persistExam();
+}
+function persistExam() {}
+function llAtDist(ll, d) {
+  let acc = 0;
+  for (let i = 1; i < ll.length; i++) {
+    const s = L.latLng(ll[i - 1]).distanceTo(ll[i]);
+    if (acc + s >= d) { const t = (d - acc) / (s || 1); return [ll[i - 1][0] + t * (ll[i][0] - ll[i - 1][0]), ll[i - 1][1] + t * (ll[i][1] - ll[i - 1][1])]; }
+    acc += s;
+  }
+  return ll[ll.length - 1];
+}
+function drawExam(fit = false) {
+  trailLayer.clearLayers();
+  const bounds = [];
+  state.exam.trails.forEach((t, i) => {
+    const color = COLORS[i % COLORS.length], ll = t.ll;
+    bounds.push(...ll);
+    L.polyline(ll, { color: '#ffffff', weight: 9, opacity: 0.9 }).addTo(trailLayer);
+    L.polyline(ll, { color, weight: 5, opacity: 1 }).addTo(trailLayer).bindTooltip(`Trail ${i + 1} · ${t.level} · ${t.length} m`, { sticky: true });
+    t.steps.filter(s => s.kind === 'turn').forEach(s => {
+      L.marker(llAtDist(ll, s.at), { icon: L.divIcon({ className: '', html: `<div class="lf-mark lf-turn" style="background:${color}"></div>`, iconSize: [12, 12], iconAnchor: [6, 6] }), keyboard: false })
+        .bindTooltip(`Trail ${i + 1}, ${s.at} m: ${s.text}`).addTo(trailLayer);
+    });
+    L.marker(ll[0], { icon: icon('', color, 'S' + (i + 1)) }).bindTooltip(`Trail ${i + 1}: Start`).addTo(trailLayer);
+    L.marker(ll[ll.length - 1], { icon: icon('lf-end', color, 'Z' + (i + 1)) }).bindTooltip(`Trail ${i + 1}: Ziel`).addTo(trailLayer);
+  });
+  if (fit && bounds.length) map.fitBounds(bounds, { padding: [30, 30] });
+}
+function renderExam() {
+  const ex = state.exam, host = $('#results');
+  host.innerHTML = '';
+  const h = document.createElement('h2'); h.textContent = '4 · Prüfungstrails'; host.append(h);
+  const done = ex.trails.filter(t => t.checked).length;
+  const count = document.createElement('p'); count.className = 'hint';
+  count.innerHTML = `<b>${done} von ${ex.trails.length}</b> Trails geprüft (abgefahren). Fällt ein Trail beim Abfahren durch: „Ersetzen“.`;
+  host.append(count);
+  const cards = document.createElement('div'); cards.className = 'cards';
+  ex.trails.forEach((t, i) => {
+    const lv = Planner.LEVELS[t.level];
+    const card = document.createElement('article'); card.className = 'card' + (t.checked ? ' checked' : '');
+    card.innerHTML = `
+      <div class="card-head"><span class="dot num" style="background:${COLORS[i % COLORS.length]}">${i + 1}</span>
+        <span class="name">Trail ${i + 1}</span><span class="chip">${esc(t.level)}</span>
+        <span class="lay">legen bis <b>${layTime(t.level)}</b></span></div>
+      <div class="stats"><span><b>${t.length}</b> m</span><span><b>${t.decisions}</b> Entscheidungsstelle${t.decisions === 1 ? '' : 'n'}, davon <b>${t.turns}</b> Richtungswechsel</span><span><b>${t.crossings}</b> Kreuzung${t.crossings === 1 ? '' : 'en'}</span><span>Suchzeit <b>${lv.searchMin}</b> min</span></div>
+      <div class="streets"></div>
+      <details class="checks steps-box"><summary>Trailverlauf: ${t.steps.length} Schritte</summary><ol class="steps"></ol></details>
+      <label class="check exam-check"><input type="checkbox"${t.checked ? ' checked' : ''}> geprüft (abgefahren)</label>
+      <div class="actions"></div>`;
+    card.querySelector('.streets').textContent = `${t.startStreet} → ${t.endStreet}`;
+    const ol = card.querySelector('ol');
+    t.steps.forEach(s => {
+      const li = document.createElement('li'); li.className = s.kind;
+      li.innerHTML = `<span class="m">${s.at} m</span><span class="t"></span>`;
+      li.querySelector('.t').textContent = s.text;
+      if (s.options) { const o = document.createElement('span'); o.className = 'opts'; o.textContent = ` · ${s.options} Möglichkeiten`; li.querySelector('.t').append(o); }
+      ol.append(li);
+    });
+    card.querySelector('.exam-check input').onchange = e => { t.checked = e.target.checked; persistExam(); renderExam(); };
+    const bRep = mk('Ersetzen', () => {}); bRep.disabled = true;
+    card.querySelector('.actions').append(bRep, linkBtn('Startpunkt', pointLink(t.ll[0])), linkBtn('Endpunkt', pointLink(t.ll[t.ll.length - 1])));
+    cards.append(card);
+  });
+  host.append(cards);
+  drawExam();
+}
+
 function renderResults() {
   const host = $('#results');
+  if (planMode === 'pruefung' && state.exam) { renderExam(); return; }
   if (!state.plans.length) { host.innerHTML = ''; trailLayer.clearLayers(); return; }
   host.innerHTML = '';
   const h = document.createElement('h2'); h.textContent = '4 · Trailplan'; host.append(h);
