@@ -273,7 +273,7 @@ details.steps-box ol.steps { padding: 6px 0 0; }
           <select id="radius"><option value="800">800 m Radius</option><option value="1200" selected>1,2 km Radius</option><option value="1600">1,6 km Radius</option><option value="2200">2,2 km Radius</option></select></div>
         <div><label class="lbl" for="terrain">Gelände</label>
           <select id="terrain"><option value="ort" selected>Nur im Ort</option><option value="mix">Ort und Ortsrand</option><option value="frei">Auch Feld und Wald</option></select></div>
-        <label class="check" for="allowPaths"><input id="allowPaths" type="checkbox"> Fuß- und Feldwege erlauben (abseits der Straßen, vorher prüfen)</label>
+        <label class="check" for="allowPaths"><input id="allowPaths" type="checkbox" checked> Fuß- und Feldwege erlauben (auf der Straßenkarte oft nicht zu sehen)</label>
         <label class="check" for="avoidLoops"><input id="avoidLoops" type="checkbox" checked> Trails vermeiden, die auf sich zurücklaufen</label>
         <div><label class="lbl" for="minDist">Abstand zwischen Trails</label>
           <select id="minDist"><option value="20">mind. 20 m</option><option value="30" selected>mind. 30 m</option><option value="50">mind. 50 m</option><option value="80">mind. 80 m</option></select></div>
@@ -1224,7 +1224,8 @@ if (saved.startTime) $('#startTime').value = saved.startTime;
 if (saved.radius) $('#radius').value = saved.radius;
 if (saved.minDist) $('#minDist').value = saved.minDist;
 if (saved.terrain) $('#terrain').value = saved.terrain;
-$('#allowPaths').checked = !!saved.allowPaths;
+// Fußwege standardmäßig erlaubt; eigener Schlüssel, weil der alte Schalter nur Wege ohne Namen betraf
+$('#allowPaths').checked = saved.footpaths !== false;
 $('#avoidLoops').checked = saved.avoidLoops !== false;
 let planMode = saved.mode === 'pruefung' ? 'pruefung' : 'training';
 function renderMode() {
@@ -1240,7 +1241,7 @@ document.querySelectorAll('[data-mode]').forEach(b => b.addEventListener('click'
   if (planMode === 'pruefung' && state.exam) applyExam(state.exam, true); else renderResults();
 }));
 renderMode();
-const persist = () => store.set({ basemap: typeof baseName === 'undefined' ? saved.basemap : baseName, center: state.center, placeName: state.placeName, teams: state.teams, startTime: $('#startTime').value, radius: $('#radius').value, minDist: $('#minDist').value, terrain: $('#terrain').value, allowPaths: $('#allowPaths').checked, avoidLoops: $('#avoidLoops').checked, mode: typeof planMode === 'undefined' ? saved.mode : planMode });
+const persist = () => store.set({ basemap: typeof baseName === 'undefined' ? saved.basemap : baseName, center: state.center, placeName: state.placeName, teams: state.teams, startTime: $('#startTime').value, radius: $('#radius').value, minDist: $('#minDist').value, terrain: $('#terrain').value, footpaths: $('#allowPaths').checked, avoidLoops: $('#avoidLoops').checked, mode: typeof planMode === 'undefined' ? saved.mode : planMode });
 
 // ---------- Karte ----------
 const map = L.map('map', { zoomControl: true }).setView(state.center ? [state.center.lat, state.center.lon] : CLUB.home, state.center ? 15 : 13);
@@ -1631,7 +1632,7 @@ function resetAll() {
   try { localStorage.removeItem(EXAM_KEY); } catch {}
   $('#placeInput').value = ''; $('#placeList').innerHTML = ''; $('#chosen').hidden = true; $('#chosenName').textContent = '';
   $('#startTime').value = '10:00'; $('#radius').value = '1200'; $('#terrain').value = 'ort'; $('#minDist').value = '30';
-  $('#allowPaths').checked = false; $('#avoidLoops').checked = true;
+  $('#allowPaths').checked = true; $('#avoidLoops').checked = true;
   trailLayer.clearLayers(); drawArea(); map.setView(CLUB.home, 13);
   $('#results').innerHTML = EMPTY_RESULTS;
   persist(); renderTeams(); updateExamBar();
