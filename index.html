@@ -323,19 +323,19 @@ const Planner = (() => {
   const LEVELS = {
     'MT-I': {
       key: 'MT-I', length: 300, minAgeH: 2, searchMin: 15,
-      minTurns: 1, maxTurns: 2, maxDecisions: 2, minCrossings: 0, minTrafficM: 0,
+      minTurns: 1, maxTurns: 1, maxDecisions: 1, minCrossings: 0, minTrafficM: 0,
       allowed: ['quiet'],
       terrain: 'ruhiges Wohngebiet, Wald, Wiese',
     },
     'MT-II': {
       key: 'MT-II', length: 600, minAgeH: 4, searchMin: 30,
-      minTurns: 2, maxTurns: 3, maxDecisions: 4, minCrossings: 1, minTrafficM: 0,
+      minTurns: 2, maxTurns: 2, maxDecisions: 2, minCrossings: 1, minTrafficM: 0,
       allowed: ['quiet', 'medium'],
       terrain: 'belebtes Wohngebiet, Wald, Wiese, Kreuzungen',
     },
     'MT-III': {
       key: 'MT-III', length: 1000, minAgeH: 15, searchMin: 45,
-      minTurns: 4, maxTurns: 5, maxDecisions: 5, minCrossings: 2, minTrafficM: 50,
+      minTurns: 4, maxTurns: 4, maxDecisions: 4, minCrossings: 2, minTrafficM: 50,
       allowed: ['quiet', 'medium', 'busy'],
       terrain: 'belebtes Wohngebiet, Wald, Wiese, Kreuzungen, befahrener Straßenbereich',
     },
@@ -394,6 +394,12 @@ const Planner = (() => {
     if ((t.access === 'no' || t.access === 'private') && !footOk) return true;
     if (t.foot === 'no' || t.foot === 'private') return true;
     return false;
+  }
+  function isBranch(t) {
+    const h = t.highway;
+    if (!h || ['proposed', 'construction', 'abandoned', 'disused', 'platform', 'elevator', 'corridor', 'bus_stop', 'rest_area', 'services', 'raceway', 'motorway', 'motorway_link'].includes(h)) return false;
+    if (t.area === 'yes' || ['sidewalk', 'crossing', 'traffic_island'].includes(t.footway)) return false;
+    return true;
   }
   function isDrivable(t) {
     const h = t.highway;
@@ -457,6 +463,7 @@ const Planner = (() => {
     const adj = new Map();
     const ways = [];
     const drive = [];
+    const branchAdj = new Map();   // alle Abzweige, auch nicht begehbare (für mögliche Richtungswechsel)
     const link = (a, b, wi) => { if (!adj.has(a)) adj.set(a, new Map()); adj.get(a).set(b, wi); };
 
     // Sperren an Wegen (Tore, Zäune, Mauern) aus OSM-Knoten
@@ -517,6 +524,12 @@ const Planner = (() => {
         const name = t.name || t.ref || TYPE_NAMES[t.highway] || 'Straße';
         for (let i = 0; i + 1 < pts.length; i++) drive.push({ a: pts[i], b: pts[i + 1], name });
       }
+      if (isBranch(t)) for (let i = 0; i + 1 < el.nodes.length; i++) {
+        const a = el.nodes[i], b = el.nodes[i + 1];
+        if (a === b) continue;
+        if (!branchAdj.has(a)) branchAdj.set(a, new Set()); if (!branchAdj.has(b)) branchAdj.set(b, new Set());
+        branchAdj.get(a).add(b); branchAdj.get(b).add(a);
+      }
       const cls = classify(t);
       if (!cls) continue;
       const wi = ways.length;
@@ -536,13 +549,14 @@ const Planner = (() => {
     const done = new Set();
     const K = (a, b) => a + '>' + b;
     const addAt = (n, id) => { if (!segAt.has(n)) segAt.set(n, []); segAt.get(n).push(id); };
+    const D = n => Math.max(adj.get(n).size, branchAdj.has(n) ? branchAdj.get(n).size : 0);
     for (const [n, nb] of adj) {
-      if (nb.size === 2) continue;
+      if (D(n) === 2) continue;
       for (const [m, wi0] of nb) {
         if (done.has(K(n, m))) continue;
         const nodes = [n, m], sub = [wi0];
         let prev = n, cur = m, guard = 0;
-        while (adj.get(cur).size === 2 && cur !== n && guard++ < 100000) {
+        while (D(cur) === 2 && adj.get(cur).size === 2 && cur !== n && guard++ < 100000) {
           let next = null, wi = null;
           for (const [k, w] of adj.get(cur)) if (k !== prev) { next = k; wi = w; }
           if (next === null) break;
@@ -606,7 +620,7 @@ const Planner = (() => {
       for (const wi of nb.values()) if (CLASS_RANK[ways[wi].cls] > CLASS_RANK[worst]) worst = ways[wi].cls;
       if (worst !== 'quiet') nodeCls.set(n, worst);
     }
-    return { segs, segAt, adj, ways, nodeCls, settlementAreas: polys.length, inSettlement, barriers: blockedNodes.size, terrain: 'ort', avoidLoops: true, deg: n => (adj.get(n) ? adj.get(n).size : 0), nearestDrive, toLatLon, fromLatLon: ll => P(ll[0], ll[1]), center, radius };
+    return { segs, segAt, adj, ways, nodeCls, settlementAreas: polys.length, inSettlement, barriers: blockedNodes.size, terrain: 'ort', avoidLoops: true, deg: n => (adj.get(n) ? Math.max(adj.get(n).size, branchAdj.has(n) ? branchAdj.get(n).size : 0) : 0), nearestDrive, toLatLon, fromLatLon: ll => P(ll[0], ll[1]), center, radius };
   }
 
   // ---------- Hilfen für orientierte Segmente ----------
@@ -819,7 +833,7 @@ const Planner = (() => {
     add(turns >= lvl.minTurns, `PO: mind. ${lvl.minTurns} Richtungswechsel mit Auswahl`, `${turns} Richtungswechsel`);
     // Die PO nennt nur Mindestwerte; die Obergrenzen sind Vorgabe des Vereins (nicht mehr Abzweige als nötig)
     add(turns <= lvl.maxTurns, `Vereinsvorgabe: höchstens ${lvl.maxTurns} Richtungswechsel`, `${turns} Richtungswechsel`);
-    add(decisions <= lvl.maxDecisions, `Vereinsvorgabe: höchstens ${lvl.maxDecisions} Entscheidungsstellen`, `${decisions} Entscheidungsstelle${decisions === 1 ? '' : 'n'}`);
+    add(decisions <= lvl.maxDecisions, `Vereinsvorgabe: höchstens ${lvl.maxDecisions} mögliche${lvl.maxDecisions === 1 ? 'r' : ''} Richtungswechsel (Abzweige)`, `${decisions} Entscheidungsstelle${decisions === 1 ? '' : 'n'}`);
     // Zielvorgabe (weich): wird sie verfehlt, bleibt der Trail PO-konform, ist aber schwerer als gewollt
     const tc = targetCaps(lvl, mode);
     const target = mode === 'pruefung'

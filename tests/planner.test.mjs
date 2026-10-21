@@ -21,12 +21,27 @@ test('MT-I mit mehr Entscheidungsstellen als die Vereinsvorgabe wird verworfen',
   const v = Planner.validate(G, tr);
   assert.equal(v.decisions, 3);
   assert.equal(v.ok, false);
-  assert.equal(check(v, /Vereinsvorgabe: höchstens 2 Entscheidungsstellen/).ok, false);
+  assert.equal(check(v, /Vereinsvorgabe: höchstens 1 möglicher Richtungswechsel/).ok, false);
 });
 
-test('Vereinsvorgabe: MT-I höchstens 2, MT-II höchstens 4 Entscheidungsstellen', () => {
-  assert.equal(Planner.LEVELS['MT-I'].maxDecisions, 2);
-  assert.equal(Planner.LEVELS['MT-II'].maxDecisions, 4);
+test('Vereinsvorgabe: nur so viele mögliche Richtungswechsel wie die PO verlangt', () => {
+  for (const lv of ['MT-I', 'MT-II', 'MT-III']) {
+    const L = Planner.LEVELS[lv];
+    assert.equal(L.maxDecisions, L.minTurns, lv);
+    assert.equal(L.maxTurns, L.minTurns, lv);
+  }
+});
+
+test('Auch Zufahrten und andere nicht begehbare Abzweige zählen als möglicher Richtungswechsel', () => {
+  const g = (lat, lon) => ({ lat: 49.65 + lat / 110574, lon: 9.95 + lon / 72000 });
+  const osm = { elements: [
+    { type: 'way', id: 1, nodes: [1, 2, 3], geometry: [g(0, 0), g(0, 100), g(0, 200)], tags: { highway: 'residential', name: 'Hauptweg' } },
+    { type: 'way', id: 2, nodes: [2, 4], geometry: [g(0, 100), g(40, 100)], tags: { highway: 'service', service: 'driveway' } },
+    { type: 'way', id: 3, nodes: [3, 5], geometry: [g(0, 200), g(0, 260)], tags: { highway: 'footway', footway: 'sidewalk' } },
+  ] };
+  const G = Planner.buildGraph(osm, CENTER, 1200);
+  assert.equal(G.deg(2), 3);   // Zufahrt zählt
+  assert.equal(G.deg(3), 1);   // Gehweg neben der Straße ist kein Abzweig
 });
 
 // Reihe 1 nach Osten über Spalte 3 (Kreisstraße bzw. Bundesstraße)
@@ -60,9 +75,9 @@ test('pool findet seltene MT-II-Trails zuverlässig (systematische Suche)', () =
   const osm = wideOSM();
   const G = Planner.buildGraph(osm, osm.center, 1200);
   Planner.setTerrain(G, 'ort', false, true);
-  const p = Planner.pool(G, 'MT-II', Planner.rng(5), { want: 12, maxTries: 1500, mode: 'pruefung' });
-  assert.ok(p.list.length >= 12, `nur ${p.list.length} Trails`);
-  for (const c of p.list) assert.ok(c.v.ok && c.v.decisions <= 3);
+  const p = Planner.pool(G, 'MT-II', Planner.rng(5), { want: 6, maxTries: 1500, mode: 'pruefung' });
+  assert.ok(p.list.length >= 6, `nur ${p.list.length} Trails`);
+  for (const c of p.list) assert.ok(c.v.ok && c.v.decisions <= 2);
 });
 
 test('pool liefert für MT-I nur Trails innerhalb der PO-Grenzen', () => {
