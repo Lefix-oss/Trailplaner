@@ -256,7 +256,7 @@ details.steps-box ol.steps { padding: 6px 0 0; }
       <ul id="placeList" class="places"></ul>
       <div id="places" class="places-list"></div>
       <button id="addPlace" class="small" type="button">+ weiteren Ort</button>
-      <p class="hint">Oder einen Punkt auf der Karte antippen. Suche und Kartenklick gelten für den markierten Ort, geplant wird im Kreis.</p>
+      <p class="hint">Oder einen Punkt auf der Karte antippen. Suche und Kartenklick gelten für den markierten Ort, geplant wird im Kreis. Rechts je Ort das Gelände: nur im Ort, mit Ortsrand oder auch Feld und Wald.</p>
     </section>
 
     <section>
@@ -279,7 +279,7 @@ details.steps-box ol.steps { padding: 6px 0 0; }
       <div class="grid2">
         <div><label class="lbl" for="startTime">Erste Suche um</label><input id="startTime" type="time" value="10:00"></div>
         <div><label class="lbl" for="radius">Suchgebiet</label>
-          <select id="radius"><option value="800">800 m Radius</option><option value="1200" selected>1,2 km Radius</option><option value="1600">1,6 km Radius</option><option value="2200">2,2 km Radius</option></select></div>
+          <select id="radius"><option value="400">400 m Radius</option><option value="600">600 m Radius</option><option value="800">800 m Radius</option><option value="1200" selected>1,2 km Radius</option><option value="1600">1,6 km Radius</option><option value="2200">2,2 km Radius</option></select></div>
         <label class="check" for="allowPaths"><input id="allowPaths" type="checkbox" checked> Fuß- und Feldwege erlauben (auf der Straßenkarte oft nicht zu sehen)</label>
         <label class="check" for="avoidLoops"><input id="avoidLoops" type="checkbox" checked> Trails vermeiden, die auf sich zurücklaufen</label>
         <div><label class="lbl" for="minDist">Abstand zwischen Trails</label>
@@ -1397,7 +1397,7 @@ function renderPlaces() {
     const row = document.createElement('div'); row.className = 'place' + (p.id === state.activePlace ? ' active' : '');
     const badge = document.createElement('span'); badge.className = 'place-badge'; badge.textContent = p.id; badge.style.background = PLACE_COLORS[p.id];
     const name = document.createElement('span'); name.className = 'place-name' + (p.name ? '' : ' empty'); name.textContent = p.name || 'noch kein Ort gewählt';
-    const sel = document.createElement('select'); sel.setAttribute('aria-label', `Gelände Ort ${p.id}`);
+    const sel = document.createElement('select'); sel.setAttribute('aria-label', `Gelände Ort ${p.id}`); sel.title = 'Gelände: wo an diesem Ort geplant werden darf';
     for (const [v, l] of Object.entries(TERRAIN_LABELS)) { const o = document.createElement('option'); o.value = v; o.textContent = l; sel.append(o); }
     sel.value = p.terrain || 'ort';
     sel.onchange = () => { p.terrain = sel.value; invalidate(); persist(); };
@@ -1624,11 +1624,11 @@ async function planPlaces(placeIds, mode, fixedLLs = []) {
       let msg;
       if (emptyLv) {
         const top = Object.entries(p[emptyLv].reasons).sort((a, b) => b[1] - a[1]).slice(0, 2).map(x => x[0]).join(', ');
-        const tip = place.terrain === 'ort' ? 'Beim Gelände „Ort und Ortsrand“ wählen oder' : '';
+        const tip = place.terrain === 'ort' ? `In der Ortsliste bei Ort ${place.id} statt „Nur im Ort“ das Gelände „Ort und Ortsrand“ wählen oder` : '';
         msg = `${pre}Für ${emptyLv} habe ich hier keinen passenden Trail gefunden (häufigste Gründe: ${top || 'kaum Wege'}). ${tip} Suchgebiet vergrößern oder Ort verschieben.`.replace('  ', ' ');
       } else {
         const wider = place.terrain === 'ort' ? '„Ort und Ortsrand“' : place.terrain === 'mix' ? '„Auch Feld und Wald“' : '';
-        msg = `${pre}Die Trails lassen sich hier nicht ohne Überschneidung unterbringen.${wider ? ` Beim Gelände ${wider} wählen oder` : ''} weniger Teams, kleineren Abstand, größeres Suchgebiet oder einen weiteren Ort wählen.`;
+        msg = `${pre}Die Trails lassen sich hier nicht ohne Überschneidung unterbringen.${wider ? ` In der Ortsliste bei Ort ${place.id} statt „${TERRAIN_LABELS[place.terrain]}“ das Gelände ${wider} wählen oder` : ''} weniger Teams, kleineren Abstand, größeres Suchgebiet oder einen weiteren Ort wählen.`;
       }
       return { ok: false, msg };
     }
