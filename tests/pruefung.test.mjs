@@ -83,6 +83,15 @@ test('parseExam setzt fehlenden Schwierigkeitshinweis auf leer', () => {
   assert.equal(ex.trails[0].harder, '');
 });
 
+test('shareText listet Start- bzw. Endpunkte mit Stufe, VP und Team', () => {
+  const ex = { placeName: 'Musterdorf, Landkreis X', trails: [{ level: 'MT-I', ll: [[49.1, 9.1], [49.2, 9.2]] }, { level: 'MT-II', ll: [[49.3, 9.3], [49.4, 9.4]] }],
+    assign: [{ team: 'Anna mit Luna', vp: 'VP1' }, { team: '', vp: '' }] };
+  const link = ll => `L(${ll[0]},${ll[1]})`;
+  assert.equal(Pruefung.shareText(ex, 'start', link),
+    'Startpunkte Prüfung Musterdorf\n\nTrail 1 (MT-I) – VP: VP1 – Team: Anna mit Luna\nL(49.1,9.1)\n\nTrail 2 (MT-II)\nL(49.3,9.3)');
+  assert.ok(Pruefung.shareText(ex, 'end', link).startsWith('Endpunkte Prüfung Musterdorf\n\nTrail 1 (MT-I) – VP: VP1 – Team: Anna mit Luna\nL(49.2,9.2)'));
+});
+
 test('parseExam ergänzt fehlende Zuteilung und Namenslisten', () => {
   const ex = Pruefung.parseExam('{"format":"trailplaner-pruefung","version":1,"trails":[{"level":"MT-II","ll":[[1,2],[1,3]]}]}');
   assert.deepEqual(ex.assign, [{ team: '', vp: '' }]);

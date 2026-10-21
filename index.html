@@ -1168,6 +1168,18 @@ const Pruefung = (() => {
     return { segSet: new Set(), nodeSet: new Set(), bbox: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], v: { pts } };
   }
 
+  // Text zum Versenden (z. B. per WhatsApp an Trailleger und Versteckpersonen); link() macht aus [lat, lon] einen Kartenlink
+  function shareText(exam, kind, link) {
+    const place = String(exam.placeName || '').split(',')[0].trim();
+    const head = `${kind === 'start' ? 'Startpunkte' : 'Endpunkte'} Prüfung${place ? ' ' + place : ''}`;
+    const rows = exam.trails.map((t, i) => {
+      const a = (exam.assign && exam.assign[i]) || {};
+      const who = (a.vp ? ` – VP: ${a.vp}` : '') + (a.team ? ` – Team: ${a.team}` : '');
+      return `Trail ${i + 1} (${t.level})${who}\n${link(kind === 'start' ? t.ll[0] : t.ll[t.ll.length - 1])}`;
+    });
+    return [head, ...rows].join('\n\n');
+  }
+
   function serializeExam(exam) { return JSON.stringify(exam, null, 1); }
 
   function parseExam(text) {
@@ -1195,7 +1207,7 @@ const Pruefung = (() => {
     return ex;
   }
 
-  return { FORMAT, VERSION, LEVEL_KEYS, parseNames, splitTeam, draw, setCell, obstacle, serializeExam, parseExam };
+  return { FORMAT, VERSION, LEVEL_KEYS, parseNames, splitTeam, draw, setCell, obstacle, shareText, serializeExam, parseExam };
 })();
 if (typeof module !== 'undefined') module.exports = Pruefung;
 </script>
@@ -1811,7 +1823,13 @@ function renderAssign(host) {
   }
   drawTable();
   const bSheets = mk('📄 Prüfungsbögen (PDF)', openSheets); bSheets.className = 'primary';
-  sec.append(bSheets);
+  // Start- und Endpunkte per WhatsApp, mit der jeweils aktuellen Zuteilung (Text wird erst beim Klick gebaut)
+  const wa = (kind, label) => {
+    const el = document.createElement('a'); el.className = 'wa'; el.target = '_blank'; el.rel = 'noopener'; el.textContent = label; el.href = 'https://wa.me/';
+    el.onclick = () => { el.href = 'https://wa.me/?text=' + encodeURIComponent(Pruefung.shareText(ex, kind, pointLink)); };
+    return el;
+  };
+  sec.append(bSheets, wa('start', 'Alle Startpunkte per WhatsApp senden'), wa('end', 'Alle Endpunkte per WhatsApp senden'));
   host.append(sec);
 }
 
