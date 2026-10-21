@@ -1756,13 +1756,14 @@ function snapshot(c) {
   };
 }
 function examSettings() {
-  return { radius: +$('#radius').value, minDist: +$('#minDist').value, terrain: $('#terrain').value,
+  return { radius: +$('#radius').value, minDist: +$('#minDist').value,
     allowPaths: $('#allowPaths').checked, avoidLoops: $('#avoidLoops').checked, startTime: $('#startTime').value };
 }
 function startExam() {
   const trails = state.plans[state.active].map(snapshot);
   state.exam = {
-    format: Pruefung.FORMAT, version: Pruefung.VERSION, savedAt: null, placeName: state.placeName, center: state.center,
+    format: Pruefung.FORMAT, version: Pruefung.VERSION, savedAt: null,
+    places: state.places.filter(p => trails.some(t => t.place === p.id)).map(p => ({ id: p.id, name: p.name, center: p.center, terrain: p.terrain })),
     settings: examSettings(), date: new Date().toLocaleDateString('sv'), trails,
     names: { teams: { 'MT-I': [], 'MT-II': [], 'MT-III': [] }, vps: [] }, assign: trails.map(() => ({ team: '', vp: '' })),
   };
@@ -1783,18 +1784,21 @@ function saveExamFile() {
   const ex = state.exam; if (!ex) return;
   ex.savedAt = new Date().toISOString();
   persistExam();
-  const place = (ex.placeName || 'Ort').split(',')[0].trim().replace(/\s+/g, '_');
+  const place = ex.places.map(p => placeLabel(p)).join('_').replace(/\s+/g, '_') || 'Ort';
   download(`Trailplan_${place}_${ex.date}.json`, Pruefung.serializeExam(ex), 'application/json');
   setStatus('Prüfungsstand gespeichert. Die Datei liegt im Download-Ordner.');
 }
 function applyExam(ex, fit) {
   invalidate();
   state.exam = ex; state.examSeen = ex.trails.map(() => new Set()); state.examPools = null;
-  if (ex.center) { state.center = ex.center; state.placeName = ex.placeName || ''; $('#chosen').hidden = false; $('#chosenName').textContent = state.placeName; }
+  // Orte der Prüfung in die Ortsliste übernehmen; Teams behalten ihren Ort, sofern es ihn gibt
+  state.places = ex.places.map(p => ({ id: p.id, name: p.name || '', center: p.center, terrain: p.terrain || 'ort' }));
+  state.activePlace = state.places[0].id;
+  state.teams.forEach(t => { if (!state.places.some(p => p.id === t.place)) t.place = state.places[0].id; });
+  renderPlaces(); renderTeams();
   const s = ex.settings || {};
   if (s.radius) $('#radius').value = s.radius;
   if (s.minDist) $('#minDist').value = s.minDist;
-  if (s.terrain) $('#terrain').value = s.terrain;
   if (s.startTime) $('#startTime').value = s.startTime;
   if ('allowPaths' in s) $('#allowPaths').checked = !!s.allowPaths;
   if ('avoidLoops' in s) $('#avoidLoops').checked = s.avoidLoops !== false;
@@ -1866,27 +1870,23 @@ async function replaceTrail(i, btn) {
   if (!confirm(`Trail ${i + 1} ersetzen? Das Häkchen geht verloren, der neue Trail muss abgefahren werden.`)) return;
   btn.disabled = true; btn.textContent = 'Suche Ersatz …';
   try {
-    const key = `${ex.center.lat.toFixed(5)},${ex.center.lon.toFixed(5)},${s.radius}`;
-    if (!state.graph || state.graphKey !== key) {
-      setStatus('Lade Wege aus OpenStreetMap …');
-      let osm;
-      try { osm = await loadOSM(ex.center, s.radius); }
-      catch { setStatus(`OpenStreetMap ist gerade nicht erreichbar. Trail ${i + 1} bleibt unverändert.`, true); return; }
-      setStatus('Baue Wegenetz …'); await tick();
-      state.graph = Planner.buildGraph(osm, ex.center, s.radius);
-      state.graphKey = key; state.pools = null; state.examPools = null;
-    }
-    const G = state.graph, lv = old.level;
-    Planner.setTerrain(G, s.terrain, s.allowPaths, s.avoidLoops);
+    const place = Pruefung.placeOf(ex, old);
+    let G;
+    try { G = await graphFor(place, s.radius); }
+    catch { setStatus(`OpenStreetMap ist gerade nicht erreichbar. Trail ${i + 1} bleibt unverändert.`, true); return; }
+    const lv = old.level, pk = place.id + '|' + lv;
+    Planner.setTerrain(G, place.terrain || 'ort', s.allowPaths, s.avoidLoops);
     state.examPools = state.examPools || {};
-    if (!state.examPools[lv]) {
+    if (!state.examPools[pk]) {
       setStatus(`Würfle ${lv}-Trails und prüfe sie gegen die PO …`); await tick();
-      state.examPools[lv] = Planner.pool(G, lv, Planner.rng(Date.now() % 1000003), { want: 45, maxTries: 10000, mode: 'pruefung' });
+      const pool = Planner.pool(G, lv, Planner.rng(Date.now() % 1000003), { want: 45, maxTries: 10000, mode: 'pruefung' });
+      pool.list.forEach(c => { c.G = G; c.place = place.id; });
+      state.examPools[pk] = pool;
     }
     const obstacles = ex.trails.filter((_, k) => k !== i).map(t => Pruefung.obstacle(t, G.fromLatLon));
     const oldStart = G.fromLatLon(old.ll[0]);
     const isOld = c => Math.abs(c.v.length - old.length) < 5 && Math.hypot(c.v.pts[0][0] - oldStart[0], c.v.pts[0][1] - oldStart[1]) < 5;
-    const fits = state.examPools[lv].list.filter(c => !isOld(c) && obstacles.every(o => Planner.compatible(c, o, s.minDist)));
+    const fits = state.examPools[pk].list.filter(c => !isOld(c) && obstacles.every(o => Planner.compatible(c, o, s.minDist)));
     if (!fits.length) { setStatus(`Für Trail ${i + 1} habe ich keinen Ersatz gefunden, der zu den anderen Trails passt. Trail ${i + 1} bleibt unverändert.`, true); return; }
     const seen = state.examSeen[i] || (state.examSeen[i] = new Set());
     let next = fits.find(c => !seen.has(c.id));
@@ -2026,7 +2026,6 @@ async function openSheets() {
   bar.append(bPrint, bClose, msg); ov.append(bar);
   document.body.append(ov);
 
-  const place = (ex.placeName || '').split(',')[0].trim();
   const day = ex.date ? new Date(ex.date + 'T12:00:00').toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' }) : '';
   const logo = document.querySelector('header.brand svg.logo');
   const loads = ex.trails.map((t, i) => {
@@ -2043,7 +2042,8 @@ async function openSheets() {
       <div class="sheet-foot"><span></span><span class="brand"></span></div>`;
     sh.querySelector('.sheet-title b').textContent = `Trail ${i + 1} · ${t.level}`;
     sh.querySelector('.sheet-title span').textContent = `Prüfung ${CLUB.short}${day ? ' · ' + day : ''}`;
-    const vals = [who.hf, a.vp, who.hund, `${t.length} m`, `${place}${place ? ' · ' : ''}${t.startStreet} → ${t.endStreet}`];
+    const place = placeLabel(Pruefung.placeOf(ex, t));
+    const vals = [who.hf, a.vp, who.hund, `${t.length} m`, `${place} · ${t.startStreet} → ${t.endStreet}`];
     sh.querySelectorAll('.sheet-head .v').forEach((el, k) => { el.textContent = vals[k]; el.classList.toggle('blank', !vals[k]); });
     const s = t.ll[0], e = t.ll[t.ll.length - 1];
     sh.querySelector('.sheet-foot span').textContent = `Start: ${s[0].toFixed(5)}, ${s[1].toFixed(5)} · Ende: ${e[0].toFixed(5)}, ${e[1].toFixed(5)}`;
