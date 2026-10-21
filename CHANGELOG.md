@@ -2,6 +2,10 @@
 
 Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Die aktuelle Version steht in der App neben der Überschrift.
 
+## V1.3 – 22.10.2026
+
+- **Ortssuche ohne Gemeindeflächen:** Zu manchen Orten liefert die Suche zusätzlich die Gemeinde als Verwaltungsfläche. Deren Mittelpunkt liegt oft im Feld neben dem Ort, zum Beispiel bei Wonfurt. Solche Einträge fallen jetzt weg, sobald es den Ort gleichen Namens gibt. Bleibt nur ein Treffer übrig, wird er direkt übernommen.
+
 ## V1.2 – 22.10.2026
 
 - **Radar beim Planen:** Solange der Planer rechnet, pulsiert über jedem Suchkreis ein Radar mit umlaufendem Lichtkegel. Die Karte zeigt dabei den ganzen Kreis. Das gilt für „Trails planen“, „Nur Ort … neu planen“ und „Ersetzen“.

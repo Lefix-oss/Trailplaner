@@ -207,3 +207,23 @@ test('overpassQuery enthält Wege, Wohngebiete und Sperren im Rechteck', () => {
   assert.match(q, /node\["barrier"\]/);
   assert.match(q, /out body geom;$/);
 });
+
+// ---------- Ortssuche ----------
+test('placeChoices: Gemeindefläche fällt weg, wenn es den Ort gleichen Namens gibt', () => {
+  const res = [
+    { place_id: 1, name: 'Wonfurt', category: 'boundary', osm_type: 'relation', lat: '49.9922', lon: '10.4503' },
+    { place_id: 2, name: 'Wonfurt', category: 'place', osm_type: 'node', lat: '50.0116', lon: '10.4662' },
+    { place_id: 3, name: 'Steinsfeld', category: 'place', osm_type: 'node', lat: '49.98', lon: '10.43' },
+  ];
+  assert.deepEqual(Pruefung.placeChoices(res).map(p => p.place_id), [2, 3]);
+});
+
+test('placeChoices: nur Gemeindefläche vorhanden bleibt erhalten, doppelte Orte nah beieinander nur einmal', () => {
+  const res = [
+    { place_id: 1, name: 'Neudorf', category: 'boundary', osm_type: 'relation', lat: '49.5', lon: '10.0' },
+    { place_id: 2, name: 'Altdorf', category: 'place', osm_type: 'node', lat: '49.6', lon: '10.0' },
+    { place_id: 3, name: 'Altdorf', category: 'place', osm_type: 'node', lat: '49.605', lon: '10.0' },
+    { place_id: 4, name: 'Altdorf', category: 'place', osm_type: 'node', lat: '48.0', lon: '11.0' },
+  ];
+  assert.deepEqual(Pruefung.placeChoices(res).map(p => p.place_id), [1, 2, 4]);
+});

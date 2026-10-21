@@ -1261,6 +1261,21 @@ const Pruefung = (() => {
     const list = (manifest && manifest.extracts) || [];
     return list.find(x => x.bbox[0] <= b[0] && x.bbox[1] <= b[1] && x.bbox[2] >= b[2] && x.bbox[3] >= b[3]) || null;
   }
+  // Trefferliste der Ortssuche: Gemeindeflächen (Mittelpunkt oft im Feld) fallen weg, wenn es den Ort gleichen
+  // Namens in der Nähe gibt; gleichnamige Orte nah beieinander erscheinen nur einmal. Reihenfolge bleibt.
+  function placeChoices(results) {
+    const km = (a, b) => Math.hypot((a.lat - b.lat) * 111.3, (a.lon - b.lon) * 111.3 * Math.cos(a.lat * Math.PI / 180));
+    const pt = p => ({ lat: +p.lat, lon: +p.lon });
+    const isArea = p => p.category === 'boundary' || p.osm_type === 'relation';
+    const out = [];
+    for (const p of results) {
+      const name = String(p.name || '').trim();
+      if (isArea(p) && results.some(q => q !== p && !isArea(q) && String(q.name || '').trim() === name && km(pt(p), pt(q)) < 15)) continue;
+      if (out.some(q => String(q.name || '').trim() === name && km(pt(p), pt(q)) < 2)) continue;
+      out.push(p);
+    }
+    return out;
+  }
   function overpassQuery(b) {
     const bbox = b.map(v => v.toFixed(6)).join(',');
     return `[out:json][timeout:60];(way["highway"](${bbox});way["landuse"~"^(residential|retail|commercial)$"](${bbox});relation["landuse"~"^(residential|retail|commercial)$"](${bbox});node["barrier"](${bbox}););out body geom;`;
@@ -1311,7 +1326,7 @@ const Pruefung = (() => {
     return ex;
   }
 
-  return { FORMAT, VERSION, LEVEL_KEYS, PLACE_IDS, parseNames, splitTeam, draw, setCell, obstacle, shareText, placeOf, mergePlaces, replacePlaceTrails, osmKey, osmFresh, osmBBox, findExtract, overpassQuery, serializeExam, parseExam };
+  return { FORMAT, VERSION, LEVEL_KEYS, PLACE_IDS, parseNames, splitTeam, draw, setCell, obstacle, shareText, placeOf, mergePlaces, replacePlaceTrails, osmKey, osmFresh, osmBBox, findExtract, overpassQuery, placeChoices, serializeExam, parseExam };
 })();
 if (typeof module !== 'undefined') module.exports = Pruefung;
 </script>
@@ -1328,7 +1343,7 @@ const store = {
 // Vereinsbezogene Angaben an einer Stelle (Grundlage für den späteren Mehrvereinsbetrieb, siehe docs/architektur)
 const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946] };
 // Versionsnummer: jede Änderung zählt um 0.1 hoch (V1.0 … V1.9, dann V2.0 …); Änderungen stehen in CHANGELOG.md
-const APP_VERSION = '1.2';
+const APP_VERSION = '1.3';
 document.getElementById('appVersion').textContent = 'V' + APP_VERSION;
 const saved = store.get();
 function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }
@@ -1557,11 +1572,11 @@ $('#placeForm').addEventListener('submit', async e => {
     const PLACE_RANK = { village: 0, town: 0, city: 0, hamlet: 1, suburb: 1, quarter: 2, neighbourhood: 2, isolated_dwelling: 3 };
     const isPlace = p => p.category === 'place' || PLACE_RANK[p.type] !== undefined || PLACE_RANK[p.addresstype] !== undefined;
     const km = p => map.distance(c, [+p.lat, +p.lon]) / 1000;
-    const seen = new Set(), res = [];
-    const sameSpot = (a, b) => label(a) === label(b) && map.distance([+a.lat, +a.lon], [+b.lat, +b.lon]) < 2000;
+    const seen = new Set(), all = [];
     for (const p of [...near.filter(isPlace).sort((x, y) => km(x) - km(y)), ...wide.filter(isPlace)]) {
-      if (seen.has(p.place_id) || res.some(r => sameSpot(r, p))) continue; seen.add(p.place_id); res.push(p);
+      if (!seen.has(p.place_id)) { seen.add(p.place_id); all.push(p); }
     }
+    const res = Pruefung.placeChoices(all);
     list.innerHTML = '';
     if (!res.length) { list.innerHTML = '<li class="hint">Nichts gefunden. Anders schreiben oder auf der Karte tippen.</li>'; return; }
     if (res.length === 1) { pick(res[0]); return; }
