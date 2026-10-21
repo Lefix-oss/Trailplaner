@@ -1111,7 +1111,8 @@ if (typeof module !== 'undefined') module.exports = Planner;
 /* Trailplaner – Prüfungslogik (ohne DOM, testbar mit Node) */
 const Pruefung = (() => {
   'use strict';
-  const FORMAT = 'trailplaner-pruefung', VERSION = 1;
+  const FORMAT = 'trailplaner-pruefung', VERSION = 2;   // 2: mehrere Orte (places, trail.place)
+  const PLACE_IDS = ['A', 'B', 'C', 'D'];
   const LEVEL_KEYS = ['MT-I', 'MT-II', 'MT-III'];
 
   // Ein Name pro Zeile; Leerzeilen und doppelte Namen fallen weg
@@ -1169,15 +1170,38 @@ const Pruefung = (() => {
   }
 
   // Text zum Versenden (z. B. per WhatsApp an Trailleger und Versteckpersonen); link() macht aus [lat, lon] einen Kartenlink
+  const shortName = p => String((p && p.name) || '').split(',')[0].trim();
+  function placeOf(exam, trail) { return exam.places.find(p => p.id === trail.place) || exam.places[0]; }
+
+  // Bei mehreren Orten nach Ort gegliedert, in der Reihenfolge der Ortsliste
   function shareText(exam, kind, link) {
-    const place = String(exam.placeName || '').split(',')[0].trim();
-    const head = `${kind === 'start' ? 'Startpunkte' : 'Endpunkte'} Prüfung${place ? ' ' + place : ''}`;
-    const rows = exam.trails.map((t, i) => {
+    const many = exam.places.length > 1;
+    const head = `${kind === 'start' ? 'Startpunkte' : 'Endpunkte'} Prüfung${many || !shortName(exam.places[0]) ? '' : ' ' + shortName(exam.places[0])}`;
+    const row = (t, i) => {
       const a = (exam.assign && exam.assign[i]) || {};
       const who = (a.vp ? ` – VP: ${a.vp}` : '') + (a.team ? ` – Team: ${a.team}` : '');
       return `Trail ${i + 1} (${t.level})${who}\n${link(kind === 'start' ? t.ll[0] : t.ll[t.ll.length - 1])}`;
+    };
+    if (!many) return [head, ...exam.trails.map(row)].join('\n\n');
+    const parts = [head];
+    for (const p of exam.places) {
+      const rows = exam.trails.map((t, i) => (t.place === p.id ? row(t, i) : null)).filter(Boolean);
+      if (rows.length) parts.push(`— ${shortName(p)} —`, ...rows);
+    }
+    return parts.join('\n\n');
+  }
+
+  // Trails eines Orts durch neu geplante ersetzen; alle anderen Trails samt Häkchen und Zuteilung bleiben
+  function replacePlaceTrails(exam, placeId, newTrails, place) {
+    const trails = [], assign = [];
+    let k = 0;
+    exam.trails.forEach((t, i) => {
+      if (t.place !== placeId) { trails.push(t); assign.push(exam.assign[i]); return; }
+      if (k < newTrails.length) { trails.push(newTrails[k++]); assign.push({ team: '', vp: '' }); }
     });
-    return [head, ...rows].join('\n\n');
+    while (k < newTrails.length) { trails.push(newTrails[k++]); assign.push({ team: '', vp: '' }); }
+    const places = exam.places.some(p => p.id === placeId) ? exam.places.map(p => (p.id === placeId ? place : p)) : exam.places.concat([place]);
+    return { ...exam, trails, assign, places };
   }
 
   // Zwischenspeicher für OSM-Wegedaten: Schlüssel je Ort (auf ca. 10 m) und Radius, gültig 14 Tage
@@ -1195,8 +1219,23 @@ const Pruefung = (() => {
     if (!(ex.version <= VERSION)) throw new Error('Diese Datei stammt aus einer neueren Version des Trailplaners.');
     if (!Array.isArray(ex.trails)) throw notOurs();
     const num = v => typeof v === 'number' && isFinite(v);
-    if (ex.center !== undefined && !(ex.center && num(ex.center.lat) && num(ex.center.lon))) throw new Error('Die Datei ist beschädigt: Ortsmitte fehlt.');
+    const okCenter = c => c && num(c.lat) && num(c.lon);
+    if (ex.version < 2) {
+      // Version 1: ein Ort, Name und Mitte im Kopf, Gelände in den Einstellungen
+      if (ex.center !== undefined && !okCenter(ex.center)) throw new Error('Die Datei ist beschädigt: Ortsmitte fehlt.');
+      const settings = { ...(ex.settings || {}) };
+      const terrain = settings.terrain || 'ort'; delete settings.terrain;
+      ex.places = [{ id: 'A', name: ex.placeName || '', center: ex.center || null, terrain }];
+      if (ex.settings) ex.settings = settings;
+      delete ex.placeName; delete ex.center;
+      ex.trails.forEach(t => { if (t) t.place = 'A'; });
+      ex.version = 2;
+    } else if (!Array.isArray(ex.places) || !ex.places.length || !ex.places.every(p => p && PLACE_IDS.includes(p.id) && okCenter(p.center))) {
+      throw new Error('Die Datei ist beschädigt: Ortsmitte fehlt.');
+    }
+    const ids = ex.places.map(p => p.id);
     ex.trails.forEach((t, i) => {
+      if (t && !ids.includes(t.place)) throw new Error(`Die Datei ist beschädigt: Trail ${i + 1} ist beschädigt.`);
       const pt = p => Array.isArray(p) && p.length >= 2 && num(p[0]) && num(p[1]);
       if (!t || !Array.isArray(t.ll) || t.ll.length < 2 || !t.ll.every(pt)) throw new Error(`Die Datei ist beschädigt: Trail ${i + 1} hat keine Strecke.`);
       if (!LEVEL_KEYS.includes(t.level) || (t.steps !== undefined && !Array.isArray(t.steps))) throw new Error(`Die Datei ist beschädigt: Trail ${i + 1} ist beschädigt.`);
@@ -1212,7 +1251,7 @@ const Pruefung = (() => {
     return ex;
   }
 
-  return { FORMAT, VERSION, LEVEL_KEYS, parseNames, splitTeam, draw, setCell, obstacle, shareText, osmKey, osmFresh, serializeExam, parseExam };
+  return { FORMAT, VERSION, LEVEL_KEYS, PLACE_IDS, parseNames, splitTeam, draw, setCell, obstacle, shareText, placeOf, replacePlaceTrails, osmKey, osmFresh, serializeExam, parseExam };
 })();
 if (typeof module !== 'undefined') module.exports = Pruefung;
 </script>
