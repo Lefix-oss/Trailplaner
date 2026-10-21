@@ -156,6 +156,7 @@ ol.steps li.end .t { font-weight: 600; }
 .card.checked { border-color: var(--ok); box-shadow: inset 4px 0 0 var(--ok); }
 .streets { padding: 6px 14px 0; font-size: 14px; color: var(--muted); }
 .exam-check { padding: 10px 14px 0; font-weight: 600; }
+.exam-bar { margin-top: 10px; flex-wrap: wrap; gap: 6px; }
 .linkbtn { display: inline-block; font: 600 13px/1 var(--body); padding: 7px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); text-decoration: none; }
 .linkbtn:hover { border-color: var(--muted); }
 .wa + .wa { margin-top: 8px; }
@@ -245,6 +246,11 @@ details.steps-box ol.steps { padding: 6px 0 0; }
 
     <section>
       <button id="planBtn" class="primary" type="button">Trails planen</button>
+      <div id="examBar" class="row exam-bar" hidden>
+        <button id="examSave" class="small" type="button">Stand speichern …</button>
+        <button id="examOpen" class="small" type="button">Gespeicherten Stand öffnen …</button>
+        <input id="examFile" type="file" accept=".json,application/json" hidden>
+      </div>
       <p id="status" class="status" role="status"></p>
     </section>
 
@@ -1110,10 +1116,12 @@ function renderMode() {
   $('#modeHint').textContent = planMode === 'pruefung'
     ? 'Prüfung: genau so viele Richtungswechsel wie die PO verlangt, keine weiteren Abzweige. Geht das nicht, wird der Trail als schwerer markiert.'
     : 'Training: höchstens eine Entscheidungsstelle mehr als die PO verlangt. Geht das nicht, wird der Trail als schwerer markiert.';
+  updateExamBar();
 }
 document.querySelectorAll('[data-mode]').forEach(b => b.addEventListener('click', () => {
   if (planMode === b.dataset.mode) return;
-  planMode = b.dataset.mode; invalidate(); persist(); renderMode(); renderResults();
+  planMode = b.dataset.mode; invalidate(); persist(); renderMode();
+  if (planMode === 'pruefung' && state.exam) applyExam(state.exam, true); else renderResults();
 }));
 renderMode();
 const persist = () => store.set({ basemap: typeof baseName === 'undefined' ? saved.basemap : baseName, center: state.center, placeName: state.placeName, teams: state.teams, startTime: $('#startTime').value, radius: $('#radius').value, minDist: $('#minDist').value, terrain: $('#terrain').value, allowPaths: $('#allowPaths').checked, avoidLoops: $('#avoidLoops').checked, mode: typeof planMode === 'undefined' ? saved.mode : planMode });
@@ -1381,9 +1389,9 @@ async function copy(text, btn) {
   }
   setTimeout(() => btn.textContent = old, 1500);
 }
-function download(name, text) {
+function download(name, text, type = 'application/gpx+xml') {
   const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([text], { type: 'application/gpx+xml' }));
+  a.href = URL.createObjectURL(new Blob([text], { type }));
   a.download = name; document.body.append(a); a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(a.href), 2000);
 }
@@ -1448,7 +1456,49 @@ function startExam() {
   state.examSeen = trails.map(() => new Set());
   persistExam();
 }
-function persistExam() {}
+// Laufender Stand zusätzlich im Browser, damit ein Absturz nichts kostet
+const EXAM_KEY = 'trailplaner-pruefung';
+function persistExam() {
+  try { if (state.exam) localStorage.setItem(EXAM_KEY, Pruefung.serializeExam(state.exam)); } catch {}
+  updateExamBar();
+}
+function updateExamBar() {
+  $('#examBar').hidden = planMode !== 'pruefung';
+  $('#examSave').disabled = !state.exam;
+}
+function saveExamFile() {
+  const ex = state.exam; if (!ex) return;
+  ex.savedAt = new Date().toISOString();
+  persistExam();
+  const place = (ex.placeName || 'Ort').split(',')[0].trim().replace(/\s+/g, '_');
+  download(`Trailplan_${place}_${ex.date}.json`, Pruefung.serializeExam(ex), 'application/json');
+  setStatus('Prüfungsstand gespeichert. Die Datei liegt im Download-Ordner.');
+}
+function applyExam(ex, fit) {
+  invalidate();
+  state.exam = ex; state.examSeen = ex.trails.map(() => new Set());
+  if (ex.center) { state.center = ex.center; state.placeName = ex.placeName || ''; $('#chosen').hidden = false; $('#chosenName').textContent = state.placeName; }
+  const s = ex.settings || {};
+  if (s.radius) $('#radius').value = s.radius;
+  if (s.minDist) $('#minDist').value = s.minDist;
+  if (s.terrain) $('#terrain').value = s.terrain;
+  if (s.startTime) $('#startTime').value = s.startTime;
+  if ('allowPaths' in s) $('#allowPaths').checked = !!s.allowPaths;
+  if ('avoidLoops' in s) $('#avoidLoops').checked = s.avoidLoops !== false;
+  planMode = 'pruefung';
+  persist(); renderMode(); drawArea(); persistExam(); renderResults();
+  drawExam(fit);
+}
+async function openExamFile(file) {
+  let ex;
+  try { ex = Pruefung.parseExam(await file.text()); }
+  catch (e) { setStatus(e.message, true); return; }
+  applyExam(ex, true);
+  setStatus(`Prüfungsstand geöffnet: ${ex.trails.length} Trails, davon ${ex.trails.filter(t => t.checked).length} geprüft.`);
+}
+$('#examSave').addEventListener('click', saveExamFile);
+$('#examOpen').addEventListener('click', () => $('#examFile').click());
+$('#examFile').addEventListener('change', e => { const f = e.target.files[0]; e.target.value = ''; if (f) openExamFile(f); });
 function llAtDist(ll, d) {
   let acc = 0;
   for (let i = 1; i < ll.length; i++) {
@@ -1594,6 +1644,14 @@ function linkBtn(label, href) {
 }
 function mk(label, fn) { const b = document.createElement('button'); b.type = 'button'; b.className = 'small'; b.textContent = label; b.onclick = fn; return b; }
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
+
+// Letzten Prüfungsstand still wiederherstellen; eine kaputte Sicherung wird ignoriert
+{
+  let ex = null;
+  try { const raw = localStorage.getItem(EXAM_KEY); if (raw) ex = Pruefung.parseExam(raw); } catch {}
+  if (ex && planMode === 'pruefung') { applyExam(ex, true); setStatus(`Letzter Prüfungsstand wiederhergestellt (${ex.trails.length} Trails).`); }
+  else if (ex) { state.exam = ex; state.examSeen = ex.trails.map(() => new Set()); updateExamBar(); }
+}
 })();
 </script>
 </body>
