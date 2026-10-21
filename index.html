@@ -986,6 +986,92 @@ if (typeof module !== 'undefined') module.exports = Planner;
 
 </script>
 <script>
+/* Trailplaner – Prüfungslogik (ohne DOM, testbar mit Node) */
+const Pruefung = (() => {
+  'use strict';
+  const FORMAT = 'trailplaner-pruefung', VERSION = 1;
+  const LEVEL_KEYS = ['MT-I', 'MT-II', 'MT-III'];
+
+  // Ein Name pro Zeile; Leerzeilen und doppelte Namen fallen weg
+  function parseNames(text) {
+    const out = [];
+    for (const line of String(text || '').split(/\r?\n/)) {
+      const n = line.trim();
+      if (n && !out.includes(n)) out.push(n);
+    }
+    return out;
+  }
+
+  // "Anna mit Luna" → Hundeführerin Anna, Hund Luna
+  function splitTeam(name) {
+    const s = String(name || '').trim();
+    const i = s.indexOf(' mit ');
+    return i < 0 ? { hf: s, hund: '' } : { hf: s.slice(0, i).trim(), hund: s.slice(i + 5).trim() };
+  }
+
+  function shuffle(arr, R) {
+    const a = arr.slice();
+    for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(R() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; }
+    return a;
+  }
+
+  // Teams nur innerhalb ihrer Stufe, Versteckpersonen frei; übrige Trails bleiben leer
+  function draw(trails, teams, vps, R) {
+    const assign = trails.map(() => ({ team: '', vp: '' }));
+    const unplaced = { teams: [], vps: [] };
+    for (const lv of new Set(trails.map(t => t.level))) {
+      const idx = shuffle(trails.map((t, i) => (t.level === lv ? i : -1)).filter(i => i >= 0), R);
+      const names = shuffle((teams && teams[lv]) || [], R);
+      names.forEach((n, k) => { if (k < idx.length) assign[idx[k]].team = n; else unplaced.teams.push(n); });
+    }
+    const idx = shuffle(trails.map((_, i) => i), R);
+    shuffle(vps || [], R).forEach((n, k) => { if (k < idx.length) assign[idx[k]].vp = n; else unplaced.vps.push(n); });
+    return { assign, unplaced };
+  }
+
+  // Name in Zeile i setzen; war er schon vergeben, wandert der alte Wert von i dorthin
+  function setCell(assign, i, field, name) {
+    const old = assign[i][field];
+    if (name) {
+      const j = assign.findIndex((a, k) => k !== i && a[field] === name);
+      if (j >= 0) assign[j][field] = old;
+    }
+    assign[i][field] = name || '';
+  }
+
+  // Gespeicherter Trail als Hindernis für Planner.compatible (nur Geometrie, keine Graph-Bezüge)
+  function obstacle(trail, fromLatLon) {
+    const pts = trail.ll.map(fromLatLon);
+    const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+    return { segSet: new Set(), nodeSet: new Set(), bbox: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], v: { pts } };
+  }
+
+  function serializeExam(exam) { return JSON.stringify(exam, null, 1); }
+
+  function parseExam(text) {
+    const notOurs = () => new Error('Die Datei ist kein gespeicherter Trailplan.');
+    let ex;
+    try { ex = JSON.parse(text); } catch { throw notOurs(); }
+    if (!ex || typeof ex !== 'object' || ex.format !== FORMAT) throw notOurs();
+    if (!(ex.version <= VERSION)) throw new Error('Diese Datei stammt aus einer neueren Version des Trailplaners.');
+    if (!Array.isArray(ex.trails)) throw notOurs();
+    ex.trails.forEach((t, i) => {
+      if (!t || !Array.isArray(t.ll) || t.ll.length < 2) throw new Error(`Die Datei ist beschädigt: Trail ${i + 1} hat keine Strecke.`);
+      if (typeof t.checked !== 'boolean') t.checked = false;
+    });
+    const names = ex.names || {};
+    const teams = names.teams || {};
+    ex.names = { teams: Object.fromEntries(LEVEL_KEYS.map(k => [k, Array.isArray(teams[k]) ? teams[k] : []])), vps: Array.isArray(names.vps) ? names.vps : [] };
+    const assign = Array.isArray(ex.assign) ? ex.assign : [];
+    ex.assign = ex.trails.map((_, i) => ({ team: (assign[i] && assign[i].team) || '', vp: (assign[i] && assign[i].vp) || '' }));
+    return ex;
+  }
+
+  return { FORMAT, VERSION, LEVEL_KEYS, parseNames, splitTeam, draw, setCell, obstacle, serializeExam, parseExam };
+})();
+if (typeof module !== 'undefined') module.exports = Pruefung;
+</script>
+<script>
 (() => {
 'use strict';
 const COLORS = ['#1c7ed6', '#d6336c', '#2f9e44', '#7048e8', '#f08c00', '#0c8599', '#862e9c', '#495057', '#e03131', '#7f5539'];
