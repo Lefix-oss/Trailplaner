@@ -227,3 +227,10 @@ test('placeChoices: nur Gemeindefläche vorhanden bleibt erhalten, doppelte Orte
   ];
   assert.deepEqual(Pruefung.placeChoices(res).map(p => p.place_id), [1, 2, 4]);
 });
+
+test('replacePlaceTrails hält die Trails eines Orts zusammen (Kette bleibt ein Block)', () => {
+  const ex = v2();   // Orte A, B, A
+  const r = Pruefung.replacePlaceTrails(ex, 'B', [T2('MT-II', 'B', false), T2('MT-II', 'B', false)], ex.places[1]);
+  assert.deepEqual(r.trails.map(t => t.place), ['A', 'B', 'B', 'A']);
+  assert.deepEqual(r.assign, [{ team: 'Anna mit Luna', vp: 'VP1' }, { team: '', vp: '' }, { team: '', vp: '' }, { team: '', vp: 'VP3' }]);
+});

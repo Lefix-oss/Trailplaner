@@ -1254,7 +1254,8 @@ const Planner = (() => {
       for (let i = 1; i < wpts.length; i++) for (let k = 1; k < c.v.pts.length; k++) if (segSegDist(wpts[i - 1], wpts[i], c.v.pts[k - 1], c.v.pts[k]) < minDist) return false;
       return true;
     }
-    const budgets = [...Array(Math.min(maxBudget, n - 1) + 1).keys()];   // Lückenbudget 0 … 3
+    // Lückenbudget 0 … 3, zuletzt beliebig viele (Teilketten statt gar keiner Kette)
+    const budgets = [...new Set([...Array(Math.min(maxBudget, n - 1) + 1).keys(), n - 1])];
     for (const budget of budgets) {
       const deadline = Date.now() + sliceMs, chosen = [], walks = [];
       let best = null, stop = false;
@@ -1392,13 +1393,14 @@ const Pruefung = (() => {
 
   // Trails eines Orts durch neu geplante ersetzen; alle anderen Trails samt Häkchen und Zuteilung bleiben
   function replacePlaceTrails(exam, placeId, newTrails, place) {
-    const trails = [], assign = [];
-    let k = 0;
-    exam.trails.forEach((t, i) => {
-      if (t.place !== placeId) { trails.push(t); assign.push(exam.assign[i]); return; }
-      if (k < newTrails.length) { trails.push(newTrails[k++]); assign.push({ team: '', vp: '' }); }
-    });
-    while (k < newTrails.length) { trails.push(newTrails[k++]); assign.push({ team: '', vp: '' }); }
+    // Die neuen Trails kommen als Block an die Stelle des ersten bisherigen Trails dieses Orts (sonst ans Ende),
+    // damit eine Kette nicht von Trails anderer Orte unterbrochen wird
+    const first = exam.trails.findIndex(t => t.place === placeId);
+    const keep = exam.trails.map((t, i) => ({ t, a: exam.assign[i] })).filter(x => x.t.place !== placeId);
+    const at = first < 0 ? keep.length : exam.trails.slice(0, first).filter(t => t.place !== placeId).length;
+    const fresh = newTrails.map(t => ({ t, a: { team: '', vp: '' } }));
+    const all = keep.slice(0, at).concat(fresh, keep.slice(at));
+    const trails = all.map(x => x.t), assign = all.map(x => x.a);
     const places = exam.places.some(p => p.id === placeId) ? exam.places.map(p => (p.id === placeId ? place : p)) : exam.places.concat([place]);
     return { ...exam, trails, assign, places };
   }
@@ -2259,7 +2261,7 @@ async function replaceTrail(i, btn) {
     if (!fits.some(c => !seen.has(c.id))) seen.clear();
     seen.add(next.id);
     next.link = old.link === undefined ? undefined : fit.lin ? { dist: fit.lin.dist, gap: false, pts: fit.lin.pts }
-      : old.link && old.link.gap && i > 0 ? (() => { const pe = G.fromLatLon(ex.trails[i - 1].ll[ex.trails[i - 1].ll.length - 1]); return { gap: true, dist: Math.hypot(pe[0] - next.v.pts[0][0], pe[1] - next.v.pts[0][1]) }; })() : old.link;
+      : i > 0 && same(ex.trails[i - 1]) ? (() => { const pe = G.fromLatLon(ex.trails[i - 1].ll[ex.trails[i - 1].ll.length - 1]); return { gap: true, dist: Math.hypot(pe[0] - next.v.pts[0][0], pe[1] - next.v.pts[0][1]) }; })() : null;
     ex.trails[i] = snapshot(next);
     if (fit.lout) ex.trails[i + 1].link = { dist: Math.round(fit.lout.dist), gap: false, ll: fit.lout.pts.map(p => G.toLatLon(p)) };
     persistExam(); renderExam();
