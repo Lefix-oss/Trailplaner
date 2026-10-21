@@ -102,12 +102,20 @@ button.small { font-size: 13px; padding: 7px 10px; }
 .hint { font-size: 13px; color: var(--muted); margin: 6px 0 0; }
 .places { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; }
 .places button { width: 100%; text-align: left; font-weight: 500; font-size: 14px; line-height: 1.3; }
-.chosen { margin-top: 8px; font-size: 14px; display: flex; gap: 8px; align-items: center; }
-.chosen b { font-weight: 600; }
+.places-list { display: grid; gap: 6px; margin: 8px 0; }
+.place { display: grid; grid-template-columns: 28px 1fr auto auto; gap: 8px; align-items: center; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; font-size: 14px; }
+.place.active { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
+.place-badge { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 4px; color: #fff; font-weight: 700; }
+.place-name { min-width: 0; overflow-wrap: anywhere; }
+.place-name.empty { color: var(--muted); font-style: italic; }
+.place select { padding: 5px 6px; font-size: 13px; width: auto; }
+.place .replan { grid-column: 2 / -1; justify-self: start; }
+.team select.team-place { width: auto; padding: 5px 6px; font-size: 13px; }
 .pin { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); flex: none; }
 
 .teams { display: grid; gap: 8px; }
 .team { display: grid; grid-template-columns: 24px 1fr auto auto; gap: 8px; align-items: center; }
+.teams.with-place .team { grid-template-columns: 24px 1fr auto auto auto; }
 .dot { width: 14px; height: 14px; border-radius: 50%; border: 2px solid var(--panel); box-shadow: 0 0 0 1px var(--line); }
 .dot.num { width: 24px; height: 24px; display: grid; place-items: center; color: #fff; font: 700 13px/1 var(--display); }
 .seg { display: inline-flex; border: 1px solid var(--line); border-radius: 6px; overflow: hidden; }
@@ -246,8 +254,9 @@ details.steps-box ol.steps { padding: 6px 0 0; }
         <button id="placeBtn" type="submit">Suchen</button>
       </form>
       <ul id="placeList" class="places"></ul>
-      <div id="chosen" class="chosen" hidden><span class="pin"></span><span id="chosenName"></span></div>
-      <p class="hint">Oder einen Punkt auf der Karte antippen. Geplant wird im orangen Kreis.</p>
+      <div id="places" class="places-list"></div>
+      <button id="addPlace" class="small" type="button">+ weiteren Ort</button>
+      <p class="hint">Oder einen Punkt auf der Karte antippen. Suche und Kartenklick gelten für den markierten Ort, geplant wird im Kreis.</p>
     </section>
 
     <section>
@@ -271,8 +280,6 @@ details.steps-box ol.steps { padding: 6px 0 0; }
         <div><label class="lbl" for="startTime">Erste Suche um</label><input id="startTime" type="time" value="10:00"></div>
         <div><label class="lbl" for="radius">Suchgebiet</label>
           <select id="radius"><option value="800">800 m Radius</option><option value="1200" selected>1,2 km Radius</option><option value="1600">1,6 km Radius</option><option value="2200">2,2 km Radius</option></select></div>
-        <div><label class="lbl" for="terrain">Gelände</label>
-          <select id="terrain"><option value="ort" selected>Nur im Ort</option><option value="mix">Ort und Ortsrand</option><option value="frei">Auch Feld und Wald</option></select></div>
         <label class="check" for="allowPaths"><input id="allowPaths" type="checkbox" checked> Fuß- und Feldwege erlauben (auf der Straßenkarte oft nicht zu sehen)</label>
         <label class="check" for="avoidLoops"><input id="avoidLoops" type="checkbox" checked> Trails vermeiden, die auf sich zurücklaufen</label>
         <div><label class="lbl" for="minDist">Abstand zwischen Trails</label>
@@ -1268,11 +1275,18 @@ const store = {
 // Vereinsbezogene Angaben an einer Stelle (Grundlage für den späteren Mehrvereinsbetrieb, siehe docs/architektur)
 const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946] };
 const saved = store.get();
-function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I' }, { name: 'Team 2', level: 'MT-II' }, { name: 'Team 3', level: 'MT-II' }]; }
+function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }
+// Orte A, B, … mit eigenem Gelände; alter Speicherstand (ein Ort) wird zu Ort A
+const PLACE_COLORS = { A: '#e8590c', B: '#1c7ed6', C: '#2f9e44', D: '#7048e8' };
+const TERRAIN_LABELS = { ort: 'Nur im Ort', mix: 'Ort und Ortsrand', frei: 'Auch Feld und Wald' };
+const blankPlace = id => ({ id, name: '', center: null, terrain: 'ort' });
+function initialPlaces() {
+  if (Array.isArray(saved.places) && saved.places.length) return saved.places;
+  return [{ id: 'A', name: saved.placeName || '', center: saved.center || null, terrain: saved.terrain || 'ort' }];
+}
 const EMPTY_RESULTS = $('#results').innerHTML;   // „So geht's“-Hinweis für den Neuanfang
 const state = {
-  center: saved.center || null,
-  placeName: saved.placeName || '',
+  places: initialPlaces(), activePlace: saved.activePlace || 'A',
   teams: saved.teams || defaultTeams(),
   graph: null, graphKey: '', pools: null, plans: [], active: 0, seed: Date.now() % 100000, planTeams: null,
   exam: null, examPools: null, examSeen: [],   // Prüfungsstand: eingefrorene Trails, Häkchen, Zuteilung
@@ -1280,7 +1294,9 @@ const state = {
 if (saved.startTime) $('#startTime').value = saved.startTime;
 if (saved.radius) $('#radius').value = saved.radius;
 if (saved.minDist) $('#minDist').value = saved.minDist;
-if (saved.terrain) $('#terrain').value = saved.terrain;
+if (!state.places.some(p => p.id === state.activePlace)) state.activePlace = state.places[0].id;
+state.teams.forEach(t => { if (!state.places.some(p => p.id === t.place)) t.place = state.places[0].id; });
+const activePlace = () => state.places.find(p => p.id === state.activePlace);
 // Fußwege standardmäßig erlaubt; eigener Schlüssel, weil der alte Schalter nur Wege ohne Namen betraf
 $('#allowPaths').checked = saved.footpaths !== false;
 $('#avoidLoops').checked = saved.avoidLoops !== false;
@@ -1298,10 +1314,11 @@ document.querySelectorAll('[data-mode]').forEach(b => b.addEventListener('click'
   if (planMode === 'pruefung' && state.exam) applyExam(state.exam, true); else renderResults();
 }));
 renderMode();
-const persist = () => store.set({ basemap: typeof baseName === 'undefined' ? saved.basemap : baseName, center: state.center, placeName: state.placeName, teams: state.teams, startTime: $('#startTime').value, radius: $('#radius').value, minDist: $('#minDist').value, terrain: $('#terrain').value, footpaths: $('#allowPaths').checked, avoidLoops: $('#avoidLoops').checked, mode: typeof planMode === 'undefined' ? saved.mode : planMode });
+const persist = () => store.set({ basemap: typeof baseName === 'undefined' ? saved.basemap : baseName, places: state.places, activePlace: state.activePlace, teams: state.teams, startTime: $('#startTime').value, radius: $('#radius').value, minDist: $('#minDist').value, footpaths: $('#allowPaths').checked, avoidLoops: $('#avoidLoops').checked, mode: typeof planMode === 'undefined' ? saved.mode : planMode });
 
 // ---------- Karte ----------
-const map = L.map('map', { zoomControl: true }).setView(state.center ? [state.center.lat, state.center.lon] : CLUB.home, state.center ? 15 : 13);
+const startCenter = activePlace().center;
+const map = L.map('map', { zoomControl: true }).setView(startCenter ? [startCenter.lat, startCenter.lon] : CLUB.home, startCenter ? 15 : 13);
 // Hintergrundkarten ohne API-Schlüssel; fällt automatisch auf die nächste zurück, wenn eine nicht lädt
 const OSM_ATTR = '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>-Mitwirkende';
 const BASEMAPS = {
@@ -1327,7 +1344,7 @@ baseNames.forEach((name, i) => {
     }
   });
 });
-let areaCircle = null, trailLayer = L.layerGroup().addTo(map), trailsShown = true;
+let areaLayer = L.layerGroup().addTo(map), trailLayer = L.layerGroup().addTo(map), trailsShown = true;
 const TrailToggle = L.Control.extend({
   options: { position: 'topleft' },
   onAdd() {
@@ -1342,10 +1359,15 @@ const TrailToggle = L.Control.extend({
   },
 });
 new TrailToggle().addTo(map);
+// Suchkreis je Ort; der markierte Ort kräftiger, ab zwei Orten mit Kennbuchstabe
 function drawArea() {
-  if (areaCircle) areaCircle.remove();
-  if (!state.center) return;
-  areaCircle = L.circle([state.center.lat, state.center.lon], { radius: +$('#radius').value, color: '#e8590c', weight: 2, dashArray: '6 6', fill: true, fillOpacity: 0.04, interactive: false }).addTo(map);
+  areaLayer.clearLayers();
+  for (const p of state.places) {
+    if (!p.center) continue;
+    const act = p.id === state.activePlace, col = PLACE_COLORS[p.id];
+    L.circle([p.center.lat, p.center.lon], { radius: +$('#radius').value, color: col, weight: act ? 3 : 2, dashArray: '6 6', fill: true, fillOpacity: act ? 0.06 : 0.02, interactive: false }).addTo(areaLayer);
+    if (state.places.length > 1) L.marker([p.center.lat, p.center.lon], { icon: L.divIcon({ className: '', html: `<div class="lf-mark lf-lbl" style="background:${col}">${p.id}</div>`, iconSize: [26, 24], iconAnchor: [13, 12] }), interactive: false, keyboard: false }).addTo(areaLayer);
+  }
 }
 drawArea();
 map.on('click', e => {
@@ -1358,16 +1380,55 @@ function invalidate() {
   renderResults();
   setStatus('Einstellungen geändert: bitte neu planen.');
 }
+// Ortssuche und Kartenklick setzen die Mitte des markierten Orts
 function setCenter(c, name, fly = true) {
   invalidate();
-  state.center = c; state.placeName = name; state.graph = null;
-  $('#chosen').hidden = false; $('#chosenName').textContent = name;
-  drawArea(); persist();
+  const p = activePlace(); p.center = c; p.name = name;
+  renderPlaces(); drawArea(); persist();
   if (fly) map.flyTo([c.lat, c.lon], 15, { duration: 0.6 });
 }
-if (state.center) { $('#chosen').hidden = false; $('#chosenName').textContent = state.placeName; }
+function renderPlaces() {
+  const host = $('#places'); host.innerHTML = '';
+  const many = state.places.length > 1;
+  for (const p of state.places) {
+    const row = document.createElement('div'); row.className = 'place' + (p.id === state.activePlace ? ' active' : '');
+    const badge = document.createElement('span'); badge.className = 'place-badge'; badge.textContent = p.id; badge.style.background = PLACE_COLORS[p.id];
+    const name = document.createElement('span'); name.className = 'place-name' + (p.name ? '' : ' empty'); name.textContent = p.name || 'noch kein Ort gewählt';
+    const sel = document.createElement('select'); sel.setAttribute('aria-label', `Gelände Ort ${p.id}`);
+    for (const [v, l] of Object.entries(TERRAIN_LABELS)) { const o = document.createElement('option'); o.value = v; o.textContent = l; sel.append(o); }
+    sel.value = p.terrain || 'ort';
+    sel.onchange = () => { p.terrain = sel.value; invalidate(); persist(); };
+    const x = document.createElement('button'); x.type = 'button'; x.className = 'x'; x.textContent = '✕'; x.disabled = !many; x.setAttribute('aria-label', `Ort ${p.id} entfernen`);
+    x.onclick = () => removePlace(p.id);
+    row.onclick = e => {
+      if (e.target.closest('select, button')) return;
+      state.activePlace = p.id; renderPlaces(); drawArea(); persist();
+      if (p.center) map.flyTo([p.center.lat, p.center.lon], 15, { duration: 0.6 });
+    };
+    row.append(badge, name, sel, x);
+    host.append(row);
+  }
+  $('#addPlace').disabled = state.places.length >= Pruefung.PLACE_IDS.length;
+}
+function addPlace() {
+  const id = Pruefung.PLACE_IDS.find(i => !state.places.some(p => p.id === i)); if (!id) return;
+  state.places.push(blankPlace(id)); state.activePlace = id;
+  invalidate(); renderPlaces(); renderTeams(); drawArea(); persist();
+  setStatus(`Ort ${id} angelegt: Ortschaft suchen oder auf der Karte tippen.`);
+}
+// Teams eines entfernten Orts wandern zum ersten verbleibenden Ort
+function removePlace(id) {
+  if (state.places.length <= 1) return;
+  state.places = state.places.filter(p => p.id !== id);
+  const first = state.places[0].id;
+  state.teams.forEach(t => { if (t.place === id) t.place = first; });
+  if (state.activePlace === id) state.activePlace = first;
+  invalidate(); renderPlaces(); renderTeams(); drawArea(); persist();
+}
+$('#addPlace').addEventListener('click', addPlace);
+renderPlaces();
 $('#radius').addEventListener('change', () => { invalidate(); state.graph = null; drawArea(); persist(); });
-for (const id of ['#minDist', '#terrain', '#allowPaths', '#avoidLoops']) $(id).addEventListener('change', () => { invalidate(); persist(); });
+for (const id of ['#minDist', '#allowPaths', '#avoidLoops']) $(id).addEventListener('change', () => { invalidate(); persist(); });
 $('#startTime').addEventListener('change', () => { persist(); renderResults(); });
 
 // ---------- Ortssuche ----------
@@ -1435,12 +1496,22 @@ function renderTeams() {
     const x = document.createElement('button'); x.type = 'button'; x.className = 'x'; x.textContent = '✕'; x.setAttribute('aria-label', 'Team entfernen');
     x.disabled = state.teams.length <= 1;
     x.onclick = () => { invalidate(); state.teams.splice(i, 1); persist(); renderTeams(); };
-    row.append(dot, inp, seg, x); host.append(row);
+    row.append(dot, inp, seg);
+    // Ortsauswahl erst ab zwei Orten
+    if (state.places.length > 1) {
+      const ps = document.createElement('select'); ps.className = 'team-place'; ps.setAttribute('aria-label', 'Ort Team ' + (i + 1));
+      for (const p of state.places) { const o = document.createElement('option'); o.value = p.id; o.textContent = p.id; o.title = p.name; ps.append(o); }
+      ps.value = t.place; ps.title = (state.places.find(p => p.id === t.place) || {}).name || '';
+      ps.onchange = () => { invalidate(); t.place = ps.value; persist(); renderTeams(); };
+      row.append(ps);
+    }
+    row.append(x); host.append(row);
   });
+  host.classList.toggle('with-place', state.places.length > 1);
 }
 document.querySelectorAll('[data-add]').forEach(b => b.addEventListener('click', () => {
   if (state.teams.length >= 10) return;
-  invalidate(); state.teams.push({ name: `Team ${state.teams.length + 1}`, level: b.dataset.add }); persist(); renderTeams();
+  invalidate(); state.teams.push({ name: `Team ${state.teams.length + 1}`, level: b.dataset.add, place: state.activePlace }); persist(); renderTeams();
 }));
 renderTeams();
 
@@ -1715,10 +1786,10 @@ async function openExamFile(file) {
 // Alles auf Anfang: Ort, Teams, Einstellungen, Vorschläge und Prüfungsstand (der Modus bleibt)
 function resetAll() {
   if (!confirm('Alle Eingaben löschen und neu anfangen? Ein nicht als Datei gespeicherter Prüfungsstand geht dabei verloren.')) return;
-  Object.assign(state, { center: null, placeName: '', teams: defaultTeams(), graph: null, graphKey: '', pools: null, plans: [], active: 0, planTeams: null, exam: null, examPools: null, examSeen: [] });
+  Object.assign(state, { places: [blankPlace('A')], activePlace: 'A', teams: defaultTeams(), graph: null, graphKey: '', pools: null, plans: [], active: 0, planTeams: null, exam: null, examPools: null, examSeen: [] });
   try { localStorage.removeItem(EXAM_KEY); } catch {}
-  $('#placeInput').value = ''; $('#placeList').innerHTML = ''; $('#chosen').hidden = true; $('#chosenName').textContent = '';
-  $('#startTime').value = '10:00'; $('#radius').value = '1200'; $('#terrain').value = 'ort'; $('#minDist').value = '30';
+  $('#placeInput').value = ''; $('#placeList').innerHTML = ''; renderPlaces();
+  $('#startTime').value = '10:00'; $('#radius').value = '1200'; $('#minDist').value = '30';
   $('#allowPaths').checked = true; $('#avoidLoops').checked = true;
   trailLayer.clearLayers(); drawArea(); map.setView(CLUB.home, 13);
   $('#results').innerHTML = EMPTY_RESULTS;
