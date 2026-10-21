@@ -43,7 +43,8 @@ Am Prüfungstag gehen nach jedem Fund **Richterin, Prüfungsleitung und zwei Beg
 
 ## Rahmenbedingungen
 
-- Bestehende Regeln bleiben hart: PO-Mindestzahl an Richtungswechseln, Mindestabstand zwischen den Trails (auch zum Fußweg-Übergang nicht verletzen), Querungsverbote, Gelände je Ort.
+- Bestehende Regeln bleiben hart: PO-Mindestzahl an Richtungswechseln, Mindestabstand zwischen den Trails, Querungsverbote für Trails, Gelände je Ort.
+- **Fußweg-Messung** *(Entscheidung des Konzepts)*: Gemessen wird über alle öffentlich begehbaren Wege, also alles, was der Planer als begehbar einstuft. Das gilt unabhängig vom Gelände, vom Schalter „Fuß- und Feldwege“ und von der Stufe. Die Gruppe darf auf dem Weg dorthin auch Straßen mit Verkehr überqueren, weil sie von den Begleitpersonen abgesichert wird. Die Querungsverbote gelten nur für die Trails selbst.
 - Bewertung wie bisher: zusätzliche Entscheidungsstellen und unnötige Richtungswechsel sind Nachteile. Bei der Wahl zwischen Ketten gilt: erst weniger Lücken, dann einfachere Trails.
 - Eine einzige `index.html`, Logik testbar in `Planner`/`Pruefung` mit Node, Versionsnummer +0.1 und Eintrag im Changelog.
 
