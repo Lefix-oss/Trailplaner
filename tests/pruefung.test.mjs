@@ -186,3 +186,24 @@ test('shareText gliedert bei mehreren Orten nach Ort', () => {
   const txt = Pruefung.shareText(v2(), 'start', ll => 'L');
   assert.equal(txt, 'Startpunkte Prüfung\n\n— Musterdorf —\n\nTrail 1 (MT-I) – VP: VP1 – Team: Anna mit Luna\nL\n\nTrail 3 (MT-I) – VP: VP3\nL\n\n— Beispielhausen —\n\nTrail 2 (MT-II) – VP: VP2 – Team: Ben mit Rex\nL');
 });
+
+// ---------- Wegedaten: feste Auszüge und Abfrage ----------
+test('osmBBox: Rechteck um die Mitte mit Radius plus 50 m Rand', () => {
+  const b = Pruefung.osmBBox({ lat: 49.65, lon: 9.95 }, 1200);
+  assert.ok(Math.abs((b[2] - b[0]) * 110574 / 2 - 1250) < 1);          // halbe Höhe in Metern
+  assert.ok(b[1] < 9.95 && b[3] > 9.95);
+});
+
+test('findExtract: nimmt einen Auszug nur, wenn er das Suchgebiet ganz enthält', () => {
+  const manifest = { extracts: [{ file: 'a.json', bbox: [49.60, 9.90, 49.70, 10.00] }] };
+  assert.equal(Pruefung.findExtract(manifest, Pruefung.osmBBox({ lat: 49.65, lon: 9.95 }, 1200)).file, 'a.json');
+  assert.equal(Pruefung.findExtract(manifest, Pruefung.osmBBox({ lat: 49.69, lon: 9.95 }, 2200)), null);
+  assert.equal(Pruefung.findExtract(null, [1, 2, 3, 4]), null);
+});
+
+test('overpassQuery enthält Wege, Wohngebiete und Sperren im Rechteck', () => {
+  const q = Pruefung.overpassQuery([49.6, 9.9, 49.7, 10]);
+  assert.match(q, /way\["highway"\]\(49\.600000,9\.900000,49\.700000,10\.000000\)/);
+  assert.match(q, /node\["barrier"\]/);
+  assert.match(q, /out body geom;$/);
+});

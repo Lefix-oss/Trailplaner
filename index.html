@@ -255,7 +255,10 @@ details.steps-box ol.steps { padding: 6px 0 0; }
       </form>
       <ul id="placeList" class="places"></ul>
       <div id="places" class="places-list"></div>
-      <button id="addPlace" class="small" type="button">+ weiteren Ort</button>
+      <div class="row" style="gap:6px;flex-wrap:wrap">
+        <button id="addPlace" class="small" type="button">+ weiteren Ort</button>
+        <button id="refreshOSM" class="small" type="button" title="Holt die Wege des markierten Orts neu von OpenStreetMap">Wegedaten neu laden</button>
+      </div>
       <p class="hint">Oder einen Punkt auf der Karte antippen. Suche und Kartenklick gelten für den markierten Ort, geplant wird im Kreis. Rechts je Ort das Gelände (nur im Ort, mit Ortsrand oder auch Feld und Wald) und das Suchgebiet (Radius).</p>
     </section>
 
@@ -1215,6 +1218,20 @@ const Pruefung = (() => {
   const OSM_CACHE_DAYS = 14;
   function osmKey(c, radius) { return `${c.lat.toFixed(4)},${c.lon.toFixed(4)},${radius}`; }
   function osmFresh(savedAt, now) { return typeof savedAt === 'number' && now - savedAt < OSM_CACHE_DAYS * 864e5; }
+  // Rechteck [Süd, West, Nord, Ost] um die Mitte: Radius plus 50 m Rand
+  function osmBBox(c, radius) {
+    const dLat = (radius + 50) / 110574, dLon = (radius + 50) / (111320 * Math.cos(c.lat * Math.PI / 180));
+    return [c.lat - dLat, c.lon - dLon, c.lat + dLat, c.lon + dLon];
+  }
+  // Fester Wegedaten-Auszug (mit der App ausgeliefert), der das Rechteck ganz enthält, sonst null
+  function findExtract(manifest, b) {
+    const list = (manifest && manifest.extracts) || [];
+    return list.find(x => x.bbox[0] <= b[0] && x.bbox[1] <= b[1] && x.bbox[2] >= b[2] && x.bbox[3] >= b[3]) || null;
+  }
+  function overpassQuery(b) {
+    const bbox = b.map(v => v.toFixed(6)).join(',');
+    return `[out:json][timeout:60];(way["highway"](${bbox});way["landuse"~"^(residential|retail|commercial)$"](${bbox});relation["landuse"~"^(residential|retail|commercial)$"](${bbox});node["barrier"](${bbox}););out body geom;`;
+  }
 
   function serializeExam(exam) { return JSON.stringify(exam, null, 1); }
 
@@ -1261,7 +1278,7 @@ const Pruefung = (() => {
     return ex;
   }
 
-  return { FORMAT, VERSION, LEVEL_KEYS, PLACE_IDS, parseNames, splitTeam, draw, setCell, obstacle, shareText, placeOf, mergePlaces, replacePlaceTrails, osmKey, osmFresh, serializeExam, parseExam };
+  return { FORMAT, VERSION, LEVEL_KEYS, PLACE_IDS, parseNames, splitTeam, draw, setCell, obstacle, shareText, placeOf, mergePlaces, replacePlaceTrails, osmKey, osmFresh, osmBBox, findExtract, overpassQuery, serializeExam, parseExam };
 })();
 if (typeof module !== 'undefined') module.exports = Pruefung;
 </script>
@@ -1441,6 +1458,18 @@ function removePlace(id) {
   invalidate(); renderPlaces(); renderTeams(); drawArea(); persist();
 }
 $('#addPlace').addEventListener('click', addPlace);
+// Wegedaten des markierten Orts neu vom Server holen (z. B. vor einer Prüfung, wenn sich Wege geändert haben)
+$('#refreshOSM').addEventListener('click', async () => {
+  const p = activePlace(), btn = $('#refreshOSM');
+  if (!p.center) { setStatus(`Für Ort ${p.id} ist noch keine Ortschaft gewählt.`, true); return; }
+  btn.disabled = true; setStatus(`Lade Wege für ${placeLabel(p)} neu von OpenStreetMap …`);
+  try {
+    await loadOSM(p.center, p.radius, true);
+    state.graphs.delete(Pruefung.osmKey(p.center, p.radius)); invalidate();
+    setStatus(`Wegedaten für ${placeLabel(p)} aktualisiert (Stand heute).`);
+  } catch { setStatus('OpenStreetMap ist gerade nicht erreichbar oder überlastet. Die bisherigen Wegedaten bleiben in Gebrauch.', true); }
+  finally { btn.disabled = false; }
+});
 renderPlaces();
 for (const id of ['#minDist', '#allowPaths', '#avoidLoops']) $(id).addEventListener('change', () => { invalidate(); persist(); });
 $('#startTime').addEventListener('change', () => { persist(); renderResults(); });
@@ -1530,7 +1559,18 @@ document.querySelectorAll('[data-add]').forEach(b => b.addEventListener('click',
 renderTeams();
 
 // ---------- Daten laden ----------
-const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.private.coffee/api/interpreter', 'https://maps.mail.ru/osm/tools/overpass/api/interpreter'];
+const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter', 'https://overpass.private.coffee/api/interpreter', 'https://maps.mail.ru/osm/tools/overpass/api/interpreter'];
+// Feste Wegedaten-Auszüge für die Stammorte des Vereins, mit der App ausgeliefert (tools/osm-auszug.mjs)
+let extractManifest;   // undefined: noch nicht geladen, null: keine Auszüge
+async function loadExtract(c, radius) {
+  if (extractManifest === undefined) {
+    try { const r = await fetch('data/osm/index.json', { cache: 'no-cache' }); extractManifest = r.ok ? await r.json() : null; }
+    catch { extractManifest = null; }
+  }
+  const x = Pruefung.findExtract(extractManifest, Pruefung.osmBBox(c, radius));
+  if (!x) return null;
+  try { const r = await fetch('data/osm/' + x.file); return r.ok ? await r.json() : null; } catch { return null; }
+}
 // Wegedaten bleiben im Browser (IndexedDB), damit Planen und „Ersetzen“ nicht jedes Mal auf überlastete Server warten
 const osmCache = {
   db: null,
@@ -1548,34 +1588,36 @@ const osmCache = {
   },
   async set(key, val) { try { const db = await this.open(); db.transaction('osm', 'readwrite').objectStore('osm').put(val, key); } catch {} },
 };
-async function loadOSM(c, radius) {
+// Reihenfolge: frisch Gespeichertes im Browser, fester Auszug, Server; refresh holt immer neu vom Server
+async function loadOSM(c, radius, refresh = false) {
   const key = Pruefung.osmKey(c, radius), cached = await osmCache.get(key);
-  if (cached && Pruefung.osmFresh(cached.savedAt, Date.now())) return cached.data;
+  if (!refresh && cached && Pruefung.osmFresh(cached.savedAt, Date.now())) return cached.data;
+  if (!refresh) { const ex = await loadExtract(c, radius); if (ex) return ex; }
   try {
     const data = await fetchOSM(c, radius);
     osmCache.set(key, { savedAt: Date.now(), data });
     return data;
   } catch (e) {
-    if (cached) return cached.data;   // Server alle überlastet: lieber ältere Daten als gar keine
+    if (cached && !refresh) return cached.data;   // Server alle überlastet: lieber ältere Daten als gar keine
     throw e;
   }
 }
+// Alle Server gleichzeitig fragen, die erste vollständige Antwort gewinnt; nach 65 s wird abgebrochen
 async function fetchOSM(c, radius) {
-  const dLat = (radius + 50) / 110574, dLon = (radius + 50) / (111320 * Math.cos(c.lat * Math.PI / 180));
-  const bbox = [c.lat - dLat, c.lon - dLon, c.lat + dLat, c.lon + dLon].map(v => v.toFixed(6)).join(',');
-  const q = `[out:json][timeout:60];(way["highway"](${bbox});way["landuse"~"^(residential|retail|commercial)$"](${bbox});relation["landuse"~"^(residential|retail|commercial)$"](${bbox});node["barrier"](${bbox}););out body geom;`;
-  let lastErr;
-  for (const [k, url] of OVERPASS.entries()) {
-    if (k > 0) setStatus(`OpenStreetMap-Server ${k} antwortet nicht, versuche Server ${k + 1} von ${OVERPASS.length} …`);
-    // Ein hängender Server darf die Suche nicht endlos blockieren: kurz nach dem Overpass-Timeout (60 s) zum nächsten
-    const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 65000);
-    try {
-      const r = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal: ctl.signal });
+  const q = Pruefung.overpassQuery(Pruefung.osmBBox(c, radius));
+  const ctls = OVERPASS.map(() => new AbortController());
+  const timer = setTimeout(() => ctls.forEach(x => x.abort()), 65000);
+  try {
+    return await Promise.any(OVERPASS.map(async (url, k) => {
+      const r = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal: ctls[k].signal });
       if (!r.ok) throw new Error('HTTP ' + r.status);
-      return await r.json();
-    } catch (e) { lastErr = e; } finally { clearTimeout(timer); }
-  }
-  throw lastErr;
+      const data = await r.json();
+      // Bei Zeitüberschreitung liefert Overpass oft nur einen Teil der Daten mit einem Hinweis
+      if (!data || !Array.isArray(data.elements) || /error/i.test(data.remark || '')) throw new Error('unvollständig');
+      return data;
+    }));
+  } catch (e) { throw (e && e.errors && e.errors[0]) || e; }
+  finally { clearTimeout(timer); ctls.forEach(x => x.abort()); }
 }
 const tick = () => new Promise(r => setTimeout(r, 20));
 function setStatus(t, err = false) { const s = $('#status'); s.textContent = t; s.classList.toggle('err', err); }
