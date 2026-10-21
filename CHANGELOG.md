@@ -2,6 +2,10 @@
 
 Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Die aktuelle Version steht in der App neben der Überschrift.
 
+## V1.5 – 22.10.2026
+
+- **Keine Kreisverkehre in Prüfungen:** Im Prüfungsmodus führt kein Trail mehr durch einen Kreisverkehr, weil das im Zweifel zu schwer ist (Vereinsvorgabe). Im Training bleiben Kreisverkehre erlaubt. Erkannt werden alle Wege, die in OpenStreetMap als Kreisverkehr eingetragen sind.
+
 ## V1.4 – 22.10.2026
 
 - **Trails in Reihe (nur Prüfungsmodus):** Pro Ort bilden die Trails eine Kette. Erst laufen die MT-I-Trails, dann die MT-II-Trails. Die Trails werden in der Reihenfolge der Kette nummeriert.

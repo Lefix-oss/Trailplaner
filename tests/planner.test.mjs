@@ -198,3 +198,12 @@ test('chain: Reihenfolge MT-I vor MT-II, Teams in Kettenreihenfolge', () => {
   assert.deepEqual(r.teams.map(t => t.name), ['y', 'x']);
   assert.deepEqual(r.index, [1, 0]);
 });
+
+test('Kreisverkehr: in der Prüfung ausgeschlossen, im Training erlaubt', () => {
+  const G = Planner.buildGraph(gridOSM({ kreisel: true }), CENTER, 1200);
+  Planner.setTerrain(G, 'ort', false, true);
+  // Reihe 1 nach Osten, an Spalte 2 links ab auf den „Kreisverkehr“
+  const tr = mode => ({ level: 'MT-I', mode, legs: [leg(G, [1, 0], [1, 1], 30), leg(G, [1, 1], [1, 2]), leg(G, [1, 2], [2, 2], 0, 80)] });
+  assert.equal(check(Planner.validate(G, tr('pruefung')), /Kreisverkehr/).ok, false);
+  assert.equal(check(Planner.validate(G, tr('training')), /Kreisverkehr/), undefined);
+});

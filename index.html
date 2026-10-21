@@ -482,6 +482,7 @@ const Planner = (() => {
     const adj = new Map();
     const ways = [];
     const drive = [];
+    const roundaboutNodes = new Set();   // Knoten auf Kreisverkehren (in Prüfungen tabu)
     const branchAdj = new Map();   // alle Abzweige, auch nicht begehbare (für mögliche Richtungswechsel)
     const link = (a, b, wi) => { if (!adj.has(a)) adj.set(a, new Map()); adj.get(a).set(b, wi); };
 
@@ -553,7 +554,8 @@ const Planner = (() => {
       if (!cls) continue;
       const wi = ways.length;
       ways.push({ id: el.id, name: t.name || '', ref: t.ref || '', hw: t.highway, cls,
-        footpath: FOOTPATHS.has(t.highway) });
+        footpath: FOOTPATHS.has(t.highway), roundabout: ['roundabout', 'circular'].includes(t.junction) });
+      if (['roundabout', 'circular'].includes(t.junction)) for (const nd of el.nodes) roundaboutNodes.add(nd);
       for (let i = 0; i < el.nodes.length; i++) pos.set(el.nodes[i], pts[i]);
       for (let i = 0; i + 1 < el.nodes.length; i++) {
         const a = el.nodes[i], b = el.nodes[i + 1];
@@ -604,9 +606,9 @@ const Planner = (() => {
           inside = l / len;
         }
         const id = segs.length;
-        const footpath = sub.some(wi => ways[wi].footpath);
+        const footpath = sub.some(wi => ways[wi].footpath), roundabout = sub.some(wi => ways[wi].roundabout);
         const blocked = nodes.some(nd => blockedNodes.has(nd));
-        segs.push({ id, a: n, b: cur, nodes, pts, cum, len, sub, cls: worst, clsLen, inside, footpath, blocked });
+        segs.push({ id, a: n, b: cur, nodes, pts, cum, len, sub, cls: worst, clsLen, inside, footpath, roundabout, blocked });
         addAt(n, id); if (cur !== n) addAt(cur, id);
       }
     }
@@ -639,7 +641,7 @@ const Planner = (() => {
       for (const wi of nb.values()) if (CLASS_RANK[ways[wi].cls] > CLASS_RANK[worst]) worst = ways[wi].cls;
       if (worst !== 'quiet') nodeCls.set(n, worst);
     }
-    return { segs, segAt, adj, ways, nodeCls, settlementAreas: polys.length, inSettlement, barriers: blockedNodes.size, terrain: 'ort', avoidLoops: true, deg: n => (adj.get(n) ? Math.max(adj.get(n).size, branchAdj.has(n) ? branchAdj.get(n).size : 0) : 0), walkDeg: n => (adj.get(n) ? adj.get(n).size : 0), nearestDrive, toLatLon, fromLatLon: ll => P(ll[0], ll[1]), center, radius };
+    return { segs, segAt, adj, ways, nodeCls, roundaboutNodes, settlementAreas: polys.length, inSettlement, barriers: blockedNodes.size, terrain: 'ort', avoidLoops: true, deg: n => (adj.get(n) ? Math.max(adj.get(n).size, branchAdj.has(n) ? branchAdj.get(n).size : 0) : 0), walkDeg: n => (adj.get(n) ? adj.get(n).size : 0), nearestDrive, toLatLon, fromLatLon: ll => P(ll[0], ll[1]), center, radius };
   }
 
   // ---------- Hilfen für orientierte Segmente ----------
@@ -860,6 +862,11 @@ const Planner = (() => {
     if (G.strict) add(ideal, 'Streng: keine zusätzlichen Entscheidungsstellen und Richtungswechsel', ideal ? 'erfüllt' : parts.join(', '));
     // Bewertung: zusätzliche Entscheidungsstellen und unnötige Richtungswechsel sind Nachteile
     const excess = straightDecisions + extraTurns;
+    // Kreisverkehre sind im Training erlaubt, in Prüfungen im Zweifel zu schwer (Vereinsvorgabe)
+    if (mode === 'pruefung') {
+      const rb = tr.legs.some(l => G.segs[l.seg].roundabout) || nodeSeq.some(nd => G.roundaboutNodes.has(nd));
+      add(!rb, 'kein Kreisverkehr (Vereinsvorgabe Prüfung)', rb ? 'führt durch einen Kreisverkehr' : 'kein Kreisverkehr');
+    }
     if (!lvl.allowed.includes('busy')) add(!badCross, 'keine Bundes- oder Staatsstraße gequert (laut Karte)', badCross ? 'quert eine Bundes- oder Staatsstraße' : 'keine Querung');
     if (lvl.minCrossings) add(crossings >= lvl.minCrossings, `Kreuzungen (mind. ${lvl.minCrossings})`, `${crossings} Kreuzung${crossings === 1 ? '' : 'en'}`);
     if (lvl.minTrafficM) {
@@ -1501,7 +1508,7 @@ const store = {
 // Vereinsbezogene Angaben an einer Stelle (Grundlage für den späteren Mehrvereinsbetrieb, siehe docs/architektur)
 const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946] };
 // Versionsnummer: jede Änderung zählt um 0.1 hoch (V1.0 … V1.9, dann V2.0 …); Änderungen stehen in CHANGELOG.md
-const APP_VERSION = '1.4';
+const APP_VERSION = '1.5';
 document.getElementById('appVersion').textContent = 'V' + APP_VERSION;
 const saved = store.get();
 function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }
