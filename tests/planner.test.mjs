@@ -122,3 +122,79 @@ test('pool findet seltene MT-II-Trails zuverlässig (systematische Suche)', () =
   assert.ok(p.list.length >= 6, `nur ${p.list.length} Trails`);
   for (const c of p.list) assert.ok(c.v.ok && c.v.turns >= 2);
 });
+
+// ---------- Fußweg zwischen Trails (Kette) ----------
+test('walk: kürzester Fußweg um eine Ecke', () => {
+  const G = grid(true), W = Planner.walkGraph(G);
+  const r = Planner.walkPath(G, W, [45, 0], [90, 45], [], 250);
+  assert.ok(r && Math.abs(r.dist - 90) < 1, r && r.dist);
+});
+
+test('walk: gesperrte Kante wird umgangen, maxLen wird eingehalten', () => {
+  const G = grid(true), W = Planner.walkGraph(G);
+  const free = Planner.walkPath(G, W, [45, 0], [180, 45], [], 400);
+  assert.ok(Math.abs(free.dist - 180) < 1, free.dist);
+  const block = Planner.blockedEdges(W, [[100, 0], [170, 0]], 5);
+  const around = Planner.walkPath(G, W, [45, 0], [180, 45], [block], 400);
+  assert.ok(Math.abs(around.dist - 270) < 1, around && around.dist);
+  assert.equal(Planner.walkPath(G, W, [45, 0], [180, 45], [block], 250), null);
+  assert.equal(Planner.walkPath(G, W, [45, 0], [180, 45], [], 100), null);
+});
+
+test('blockedEdges: Ausnahme rund um einen Startpunkt', () => {
+  const G = grid(true), W = Planner.walkGraph(G);
+  const all = Planner.blockedEdges(W, [[0, 0], [270, 0]], 5);
+  const except = Planner.blockedEdges(W, [[0, 0], [270, 0]], 5, [45, 0], 20);
+  assert.ok(except.size < all.size);
+});
+
+test('chain: Trails in Reihe, Übergänge 75–250 m Fußweg und mind. 75 m Luftlinie, Fußwege meiden spätere Trails', () => {
+  const osm = wideOSM();
+  const G = Planner.buildGraph(osm, osm.center, 1200);
+  Planner.setTerrain(G, 'ort', true, true);
+  const W = Planner.walkGraph(G);
+  const pools = { 'MT-I': Planner.pool(G, 'MT-I', Planner.rng(4), { want: 40, maxTries: 3000, mode: 'pruefung' }) };
+  const teams = [{ level: 'MT-I' }, { level: 'MT-I' }, { level: 'MT-I' }];
+  const r = Planner.chain(G, W, teams, pools, Planner.rng(4), 30, { ms: 3000 });
+  assert.equal(r.order.length, 3);
+  assert.equal(r.gaps, 0);
+  assert.equal(r.links[0], null);
+  for (let i = 1; i < 3; i++) {
+    const l = r.links[i], a = r.order[i - 1].v.pts, b = r.order[i].v.pts;
+    assert.ok(l.dist >= 75 && l.dist <= 250, `Fußweg ${l.dist}`);
+    assert.ok(Math.hypot(a[a.length - 1][0] - b[0][0], a[a.length - 1][1] - b[0][1]) >= 75, 'Luftlinie');
+    // Fußweg hält Abstand zu allen später gelaufenen Trails (außer am Start des nächsten)
+    const later = r.order.slice(i + 1);
+    for (const c of later) for (const p of l.pts) for (let k = 1; k < c.v.pts.length; k++) {
+      const q0 = c.v.pts[k - 1], q1 = c.v.pts[k];
+      const dx = q1[0] - q0[0], dy = q1[1] - q0[1], t = Math.max(0, Math.min(1, ((p[0] - q0[0]) * dx + (p[1] - q0[1]) * dy) / (dx * dx + dy * dy || 1)));
+      assert.ok(Math.hypot(p[0] - (q0[0] + t * dx), p[1] - (q0[1] + t * dy)) >= 29, 'Fußweg zu nah an späterem Trail');
+    }
+  }
+});
+
+test('chain: ohne möglichen Übergang entstehen Lücken statt längerer Wege', () => {
+  const osm = wideOSM();
+  const G = Planner.buildGraph(osm, osm.center, 1200);
+  Planner.setTerrain(G, 'ort', true, true);
+  const W = Planner.walkGraph(G);
+  const pools = { 'MT-I': Planner.pool(G, 'MT-I', Planner.rng(4), { want: 40, maxTries: 3000, mode: 'pruefung' }) };
+  const r = Planner.chain(G, W, [{ level: 'MT-I' }, { level: 'MT-I' }, { level: 'MT-I' }], pools, Planner.rng(4), 30, { ms: 1500, maxLen: 10 });
+  assert.equal(r.order.length, 3);
+  assert.equal(r.gaps, 2);
+  assert.deepEqual(r.links, [null, null, null]);
+});
+
+test('chain: Reihenfolge MT-I vor MT-II, Teams in Kettenreihenfolge', () => {
+  const osm = wideOSM();
+  const G = Planner.buildGraph(osm, osm.center, 1200);
+  Planner.setTerrain(G, 'ort', true, true);
+  const W = Planner.walkGraph(G);
+  const R = Planner.rng(9);
+  const pools = { 'MT-I': Planner.pool(G, 'MT-I', R, { want: 30, maxTries: 3000, mode: 'pruefung' }), 'MT-II': Planner.pool(G, 'MT-II', R, { want: 30, maxTries: 3000, mode: 'pruefung' }) };
+  const teams = [{ level: 'MT-II', name: 'x' }, { level: 'MT-I', name: 'y' }];
+  const r = Planner.chain(G, W, teams, pools, R, 30, { ms: 2000 });
+  assert.deepEqual(r.order.map(c => c.tr.level), ['MT-I', 'MT-II']);
+  assert.deepEqual(r.teams.map(t => t.name), ['y', 'x']);
+  assert.deepEqual(r.index, [1, 0]);
+});

@@ -2,6 +2,18 @@
 
 Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Die aktuelle Version steht in der App neben der Überschrift.
 
+## V1.4 – 22.10.2026
+
+- **Trails in Reihe (nur Prüfungsmodus):** Pro Ort bilden die Trails eine Kette. Erst laufen die MT-I-Trails, dann die MT-II-Trails. Die Trails werden in der Reihenfolge der Kette nummeriert.
+- **Übergang:** Vom Ziel zum nächsten Start sind es 75–250 m Fußweg und mindestens 75 m Luftlinie. Der Fußweg der Gruppe hält Abstand zu allen Trails, die später noch gelaufen werden.
+- **Lücken:** Geht es nicht anders, wird die Kette an möglichst wenigen Stellen unterbrochen. Ein Übergang wird nie gedehnt.
+- **Anzeige:**
+  - Trailkarte: „Weg vom vorigen Ziel: X m“ oder „Lücke: neuer Abschnitt“
+  - Statuszeile: „Kette ohne Lücke“ oder „Kette mit N Lücken“
+  - Karte: gestrichelte Linie für den Fußweg
+- **Ersetzen** hält die Kette ein. Passt kein Ersatz, bleibt der Trail unverändert.
+- **Hinweis:** In engen Ortskernen ist eine Kette oft nicht möglich, weil der Fußweg dort kaum Abstand zu späteren Trails halten kann. Mit „Auch Feld und Wald“ und größerem Radius klappt es meist.
+
 ## V1.3 – 22.10.2026
 
 - **Ortssuche ohne Gemeindeflächen:** Zu manchen Orten liefert die Suche zusätzlich die Gemeinde als Verwaltungsfläche. Deren Mittelpunkt liegt oft im Feld neben dem Ort, zum Beispiel bei Wonfurt. Solche Einträge fallen jetzt weg, sobald es den Ort gleichen Namens gibt. Bleibt nur ein Treffer übrig, wird er direkt übernommen.

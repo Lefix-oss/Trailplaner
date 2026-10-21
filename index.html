@@ -682,14 +682,14 @@ const Planner = (() => {
 
   // ---------- Einen Trail auswürfeln ----------
   // caps: { maxTurns, maxDecisions, noStraight } – Obergrenzen für diesen Suchlauf
-  function walk(G, lvl, R, fail, caps) {
+  function walk(G, lvl, R, fail, caps, startList = null) {
     const allowed = s => segOk(G, lvl, s);
-    const starts = G._starts[lvl.key];
+    const starts = startList || G._starts[lvl.key];
     if (!starts.length) { fail('keine passenden Wege'); return null; }
     const target = lvl.length;
 
     // Startsegment nach Länge gewichtet
-    let pick = R() * G._startTotal[lvl.key], s0 = starts[0];
+    let pick = R() * (startList ? startList.reduce((a, x) => a + x.len, 0) : G._startTotal[lvl.key]), s0 = starts[0];
     for (const s of starts) { pick -= s.len; if (pick <= 0) { s0 = s; break; } }
     const fwd = R() < 0.5;
     const o0 = oriented(s0, fwd);
@@ -1025,24 +1025,24 @@ const Planner = (() => {
     for (let t = 0; t < maxTries && out.length < want; t++) {
       const pass2 = !G.strict && t >= maxTries / 2 && exactFound < want / 3;
       if (t >= maxTries / 2 && !pass2) break;
-      const tr = walk(G, lvl, R, fail, pass2 ? looseCaps : exactCaps);
+      const tr = walk(G, lvl, R, fail, pass2 ? looseCaps : exactCaps, opts.starts || null);
       if (tr) consider(tr);
     }
     // Seltene Trails findet der Zufall kaum: dann systematisch alle Abzweig-Kombinationen durchgehen
     for (const caps of G.strict ? [exactCaps] : [exactCaps, looseCaps]) {
       if (out.length >= want || (caps === looseCaps && exactFound >= want / 3)) break;
       const budget = { steps: opts.searchSteps || 250000 };
-      for (const tr of systematic(G, lvl, caps, R, budget)) { consider(tr); if (out.length >= want) break; }
+      for (const tr of systematic(G, lvl, caps, R, budget, opts.starts || null)) { consider(tr); if (out.length >= want) break; }
     }
     out.sort((a, b) => a.v.excess - b.v.excess || b.score - a.score);
     return { list: out, reasons, exactFound };
   }
 
   // Tiefensuche über alle Startpunkte (gemischt) und alle erlaubten Abzweige innerhalb der Grenzen
-  function* systematic(G, lvl, caps, R, budget) {
+  function* systematic(G, lvl, caps, R, budget, startList = null) {
     const target = lvl.length;
     const starts = [];
-    for (const s of G._starts[lvl.key]) for (const fwd of [true, false]) {
+    for (const s of startList || G._starts[lvl.key]) for (const fwd of [true, false]) {
       for (let r = MIN_DECISION_GAP + 5; r <= Math.min(s.len - 10, target - 1); r += 25) starts.push({ s, fwd, off: s.len - r });
     }
     for (let i = starts.length - 1; i > 0; i--) { const j = Math.floor(R() * (i + 1)); [starts[i], starts[j]] = [starts[j], starts[i]]; }
@@ -1135,6 +1135,162 @@ const Planner = (() => {
       `\n</trkseg></trk>\n</gpx>\n`;
   }
 
+  // ---------- Fußweg zwischen Trails (Kette im Prüfungsmodus) ----------
+  // Alle begehbaren Wege, unabhängig von Gelände und Fußweg-Schalter; Kante = zwei aufeinanderfolgende Punkte eines Segments
+  function walkGraph(G) {
+    const pos = new Map(), nb = new Map(), edges = [];
+    const add = (n, e) => { if (!nb.has(n)) nb.set(n, []); nb.get(n).push(e); };
+    for (const sg of G.segs) for (let k = 0; k + 1 < sg.nodes.length; k++) {
+      const a = sg.nodes[k], b = sg.nodes[k + 1], pa = sg.pts[k], pb = sg.pts[k + 1];
+      pos.set(a, pa); pos.set(b, pb);
+      const e = { id: edges.length, a, b, pa, pb, len: dist(pa, pb) };
+      edges.push(e); add(a, e); add(b, e);
+    }
+    return { pos, nb, edges };
+  }
+  // Kanten näher als minDist an der Linie pts; Kanten bis exceptR um exceptPt bleiben frei (Start des nächsten Trails)
+  function blockedEdges(W, pts, minDist, exceptPt = null, exceptR = 20) {
+    const out = new Set();
+    const xs = pts.map(p => p[0]), ys = pts.map(p => p[1]);
+    const bb = [Math.min(...xs) - minDist, Math.min(...ys) - minDist, Math.max(...xs) + minDist, Math.max(...ys) + minDist];
+    for (const e of W.edges) {
+      if (Math.max(e.pa[0], e.pb[0]) < bb[0] || Math.min(e.pa[0], e.pb[0]) > bb[2] || Math.max(e.pa[1], e.pb[1]) < bb[1] || Math.min(e.pa[1], e.pb[1]) > bb[3]) continue;
+      if (exceptPt && segPointDist(exceptPt, e.pa, e.pb) <= exceptR) continue;
+      for (let i = 1; i < pts.length; i++) if (segSegDist(e.pa, e.pb, pts[i - 1], pts[i]) < minDist) { out.add(e.id); break; }
+    }
+    return out;
+  }
+  function snapEdge(W, p) {
+    let best = null, bd = Infinity;
+    for (const e of W.edges) { const d = segPointDist(p, e.pa, e.pb); if (d < bd) { bd = d; best = e; } }
+    if (!best) return null;
+    const dx = best.pb[0] - best.pa[0], dy = best.pb[1] - best.pa[1], l2 = dx * dx + dy * dy;
+    const t = l2 ? Math.max(0, Math.min(1, ((p[0] - best.pa[0]) * dx + (p[1] - best.pa[1]) * dy) / l2)) : 0;
+    return { e: best, t };
+  }
+  // Kürzester Fußweg von fromPt nach toPt (Punkte auf Wegen), gesperrte Kanten tabu; null, wenn länger als maxLen
+  function walkPath(G, W, fromPt, toPt, blocked = [], maxLen = 250) {
+    const isBlocked = e => blocked.some(b => b.has(e.id));
+    const s0 = snapEdge(W, fromPt), t0 = snapEdge(W, toPt);
+    if (!s0 || !t0 || isBlocked(s0.e) || isBlocked(t0.e)) return null;
+    let best = null;
+    if (s0.e === t0.e) { const d = Math.abs(s0.t - t0.t) * s0.e.len; if (d <= maxLen) best = { dist: d, pts: [fromPt, toPt] }; }
+    const D = new Map(), prev = new Map(), open = new Map();
+    open.set(s0.e.a, s0.t * s0.e.len); open.set(s0.e.b, (1 - s0.t) * s0.e.len);
+    const tgt = new Map([[t0.e.a, t0.t * t0.e.len], [t0.e.b, (1 - t0.t) * t0.e.len]]);
+    while (open.size) {
+      let u = null, du = Infinity;
+      for (const [n, d] of open) if (d < du) { du = d; u = n; }
+      open.delete(u);
+      if (du > maxLen || (best && du >= best.dist)) break;
+      D.set(u, du);
+      if (tgt.has(u)) {
+        const total = du + tgt.get(u);
+        if (total <= maxLen && (!best || total < best.dist)) {
+          const path = [W.pos.get(u)]; let x = u; while (prev.has(x)) { x = prev.get(x); path.unshift(W.pos.get(x)); }
+          best = { dist: total, pts: [fromPt, ...path, toPt] };
+        }
+      }
+      for (const e of W.nb.get(u) || []) {
+        if (isBlocked(e)) continue;
+        const v = e.a === u ? e.b : e.a, dv = du + e.len;
+        if (D.has(v) || dv > maxLen) continue;
+        if (!open.has(v) || dv < open.get(v)) { open.set(v, dv); prev.set(v, u); }
+      }
+    }
+    return best;
+  }
+
+  // Trails eines Orts als Kette: MT-I zuerst, dann MT-II, MT-III. Gesucht wird rückwärts, damit beim Wählen eines
+  // Vorgängers alle später gelaufenen Trails bekannt sind und der Fußweg sie meiden kann. Erst ohne Lücke, dann mit
+  // wenigen Lücken (ein Übergang wird nie gedehnt), notfalls ohne Kette.
+  // Ergebnis: order (Kandidaten), teams und index (Teams in Kettenreihenfolge), links[i] = Fußweg zu order[i] oder null, gaps
+  const LEVEL_ORDER = ['MT-I', 'MT-II', 'MT-III'];
+  function chain(G, W, teams, pools, R, minDist, opts = {}) {
+    const minLen = opts.minLen ?? 75, maxLen = opts.maxLen ?? 250, minAir = opts.minAir ?? 75;
+    const sliceMs = opts.ms ?? 1500, K = opts.k ?? 8, maxBudget = opts.maxGaps ?? 3, mode = opts.mode || 'pruefung', obstacles = opts.obstacles || [];
+    const seq = teams.map((t, i) => ({ t, i })).sort((a, b) => LEVEL_ORDER.indexOf(a.t.level) - LEVEL_ORDER.indexOf(b.t.level) || a.i - b.i);
+    const n = seq.length;
+    const result = (order, links, gaps) => ({ order, links, gaps, teams: seq.map(x => x.t), index: seq.map(x => x.i) });
+    if (!n) return result([], [], 0);
+    if (!G._starts) prepare(G);
+    const memo = f => { const m = new Map(); return (...k) => { const key = k.map(x => (x && x.id) || x).join('|'); if (!m.has(key)) m.set(key, f(...k)); return m.get(key); }; };
+    const bStart = memo(c => blockedEdges(W, c.v.pts, minDist, c.v.pts[0], 20));
+    const endPt = c => c.v.pts[c.v.pts.length - 1];
+    // Segmente, die man vom Punkt p aus in maxLen Fußweg erreicht
+    const nodeSegs = new Map();
+    for (const sg of G.segs) for (const nd of sg.nodes) { if (!nodeSegs.has(nd)) nodeSegs.set(nd, new Set()); nodeSegs.get(nd).add(sg.id); }
+    function reach(p) {
+      const s0 = snapEdge(W, p); if (!s0) return new Set();
+      const D = new Map(), open = new Map([[s0.e.a, s0.t * s0.e.len], [s0.e.b, (1 - s0.t) * s0.e.len]]), segs = new Set();
+      while (open.size) {
+        let u = null, du = Infinity; for (const [k, d] of open) if (d < du) { du = d; u = k; }
+        open.delete(u); if (du > maxLen) break; D.set(u, du);
+        for (const id of nodeSegs.get(u) || []) segs.add(id);
+        for (const e of W.nb.get(u) || []) { const v = e.a === u ? e.b : e.a, dv = du + e.len; if (!D.has(v) && dv <= maxLen && (!open.has(v) || dv < open.get(v))) open.set(v, dv); }
+      }
+      return segs;
+    }
+    let uid = 0;
+    // Kandidaten der Stufe lv, die in Fußweite (ohne Sperren) hinter dem Ziel von prev starten, mit ihrem Fußweg
+    const nearList = memo((prev, lv) => {
+      const segIds = reach(endPt(prev));
+      const starts = G._starts[lv].filter(sg => segIds.has(sg.id));
+      if (!starts.length) return [];
+      const p = pool(G, lv, R, { want: K * 2, maxTries: 500, mode, starts, searchSteps: 15000 });
+      const out = [];
+      for (const c of p.list) {
+        c.id = lv + '~' + (uid++);
+        if (dist(endPt(prev), c.v.pts[0]) < minAir || !obstacles.every(o => compatible(c, o, minDist))) continue;
+        const w = walkPath(G, W, endPt(prev), c.v.pts[0], [], maxLen);
+        if (w && w.dist >= minLen) out.push(c);
+        if (out.length >= K) break;
+      }
+      return out;
+    });
+    const general = seq.map(x => (pools[x.t.level] ? pools[x.t.level].list : []).slice(0, 25));
+    // Abstand zwischen einem Fußweg und einem Trail (Polylinien)
+    function walkClear(wpts, c) {
+      for (let i = 1; i < wpts.length; i++) for (let k = 1; k < c.v.pts.length; k++) if (segSegDist(wpts[i - 1], wpts[i], c.v.pts[k - 1], c.v.pts[k]) < minDist) return false;
+      return true;
+    }
+    const budgets = [...Array(Math.min(maxBudget, n - 1) + 1).keys()];   // Lückenbudget 0 … 3
+    for (const budget of budgets) {
+      const deadline = Date.now() + sliceMs, chosen = [], walks = [];
+      let best = null, stop = false;
+      (function dfs(pos, gaps) {
+        if (best || stop) return;
+        if (Date.now() > deadline) { stop = true; return; }
+        if (pos === n) { best = result(chosen.slice(), walks.slice(), gaps); return; }
+        const lv = seq[pos].t.level;
+        const near = pos > 0 ? nearList(chosen[pos - 1], lv) : [];
+        const options = pos === 0 ? general[pos] : (gaps < budget ? near.concat(general[pos]) : near);
+        for (const c of options) {
+          if (best || stop) return;
+          if (chosen.some(o => o === c || !compatible(c, o, minDist))) continue;
+          // bisherige Fußwege der Gruppe dürfen diesen später gelaufenen Trail nicht berühren
+          if (walks.some(w => w && !walkClear(w.pts, c))) continue;
+          let w = null;
+          if (pos > 0 && near.includes(c)) {
+            const prev = chosen[pos - 1];
+            if (dist(endPt(prev), c.v.pts[0]) >= minAir) {
+              const r = walkPath(G, W, endPt(prev), c.v.pts[0], [bStart(c)], maxLen);
+              if (r && r.dist >= minLen) w = r;
+            }
+            if (!w && gaps >= budget) continue;
+          }
+          chosen.push(c); walks.push(w);
+          dfs(pos + 1, gaps + (pos > 0 && !w ? 1 : 0));
+          chosen.pop(); walks.pop();
+        }
+      })(0, 0);
+      if (best) return best;
+    }
+    // Keine Kette mit wenigen Lücken: wie bisher planen, jeder Übergang ist eine Lücke
+    const p = plans(G, seq.map(x => x.t), pools, R, minDist, 1);
+    return p.plans.length ? result(p.plans[0], new Array(n).fill(null), n - 1) : result([], [], 0);
+  }
+
   function setTerrain(G, mode, allowPaths = false, avoidLoops = true, strict = false) { G.terrain = TERRAIN[mode] !== undefined ? mode : 'ort'; G.allowPaths = !!allowPaths; G.avoidLoops = avoidLoops !== false; G.strict = !!strict; prepare(G); }
   function segOk(G, lvl, s) {
     if (!lvl.allowed.includes(s.cls)) return false;
@@ -1143,7 +1299,7 @@ const Planner = (() => {
     if (s.blocked) return false;
     return true;
   }
-  return { LEVELS, buildGraph, prepare, setTerrain, pool, plans, alternatives, validate, describe, endpointNames, toGPX, rng, trailPts, compatible };
+  return { LEVELS, buildGraph, prepare, setTerrain, pool, plans, alternatives, walkGraph, blockedEdges, walkPath, chain, snapEdge, validate, describe, endpointNames, toGPX, rng, trailPts, compatible };
 })();
 if (typeof module !== 'undefined') module.exports = Planner;
 
@@ -1343,7 +1499,7 @@ const store = {
 // Vereinsbezogene Angaben an einer Stelle (Grundlage für den späteren Mehrvereinsbetrieb, siehe docs/architektur)
 const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946] };
 // Versionsnummer: jede Änderung zählt um 0.1 hoch (V1.0 … V1.9, dann V2.0 …); Änderungen stehen in CHANGELOG.md
-const APP_VERSION = '1.3';
+const APP_VERSION = '1.4';
 document.getElementById('appVersion').textContent = 'V' + APP_VERSION;
 const saved = store.get();
 function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }
@@ -1723,7 +1879,7 @@ async function planPlaces(placeIds, mode, fixedLLs = []) {
   const minDist = +$('#minDist').value, many = state.places.length > 1;
   state.seed = (state.seed * 7919 + 13) % 1000003;
   const R = Planner.rng(state.seed);
-  const placed = fixedLLs.slice(), byTeam = new Map(), pools = {};
+  const placed = fixedLLs.slice(), byTeam = new Map(), pools = {}, inOrder = [], chainInfo = [];
   let noAreas = false;
   for (const pid of placeIds) {
     const place = state.places.find(p => p.id === pid);
@@ -1746,7 +1902,25 @@ async function planPlaces(placeIds, mode, fixedLLs = []) {
       p[lv] = pool;
     }
     pools[pid] = p;
-    const res = Planner.plans(G, teams, p, R, minDist, 1);
+    let res;
+    if (mode === 'pruefung') {
+      // Trails in Reihe: Ziel → nächster Start 75–250 m Fußweg, Fußwege meiden spätere Trails
+      setStatus(`${many ? placeLabel(place) + ': ' : ''}Reihe die Trails zu einer Kette …`); await tick();
+      G._walk = G._walk || Planner.walkGraph(G);
+      const ch = Planner.chain(G, G._walk, teams, p, R, minDist, { obstacles: obst });
+      res = { plans: ch.order.length ? [ch.order] : [] };
+      if (ch.order.length) {
+        ch.order.forEach((c, k) => {
+          c.G = G; c.place = pid; c.id = pid + ':k' + k + ':' + c.id;
+          const prev = ch.order[k - 1];
+          c.link = k === 0 ? null : ch.links[k] ? { dist: ch.links[k].dist, gap: false, pts: ch.links[k].pts }
+            : { gap: true, dist: Math.hypot(prev.v.pts[prev.v.pts.length - 1][0] - c.v.pts[0][0], prev.v.pts[prev.v.pts.length - 1][1] - c.v.pts[0][1]) };
+          inOrder.push({ c, team: { ...state.teams[idx[ch.index[k]]] } }); placed.push(c.v.pts.map(q => G.toLatLon(q)));
+        });
+        chainInfo.push({ place: placeLabel(place), gaps: ch.gaps, n: ch.order.length });
+        continue;
+      }
+    } else res = Planner.plans(G, teams, p, R, minDist, 1);
     if (!res.plans.length) {
       const pre = many ? `${placeLabel(place)}: ` : '';
       const emptyLv = Object.keys(p).find(lv => !p[lv].list.length);
@@ -1763,10 +1937,16 @@ async function planPlaces(placeIds, mode, fixedLLs = []) {
     }
     res.plans[0].forEach((c, k) => { byTeam.set(idx[k], c); placed.push(c.v.pts.map(q => G.toLatLon(q))); });
   }
+  if (inOrder.length) return { ok: true, plan: inOrder.map(x => x.c), teams: inOrder.map(x => x.team), pools, noAreas, chainInfo };
   const order = [...byTeam.keys()].sort((a, b) => a - b);
   return { ok: true, plan: order.map(i => byTeam.get(i)), teams: order.map(i => ({ ...state.teams[i] })), pools, noAreas };
 }
 
+// Zusammenfassung der Ketten für die Statuszeile
+function chainStatus(info) {
+  if (!info || !info.length) return '';
+  return ' ' + info.map(x => `${info.length > 1 ? x.place + ': ' : ''}${x.n < 2 ? 'nur ein Trail' : x.gaps === 0 ? 'Kette ohne Lücke' : x.gaps >= x.n - 1 ? 'keine Kette möglich (Fußwege zu lang oder über spätere Trails)' : `Kette mit ${x.gaps} Lücke${x.gaps === 1 ? '' : 'n'}`}`).join(' · ') + '.';
+}
 async function run() {
   const ids = state.places.filter(p => state.teams.some(t => t.place === p.id)).map(p => p.id);
   if (planMode === 'pruefung' && state.exam && !confirm('Neu planen verwirft den aktuellen Prüfungsstand. Fortfahren?')) return;
@@ -1785,7 +1965,7 @@ async function run() {
     setStatus(`Trailplan erstellt. Alle Trails erfüllen die PO-Mindestanforderungen laut Kartendaten.` +
       (harder ? ` ${harder} Trail${harder === 1 ? ' hat' : 's haben'} zusätzliche Entscheidungsstellen (siehe Hinweis an der Karte).` : ' Keiner hat zusätzliche Entscheidungsstellen.') +
       ' Vor Ort prüfen: Zugang, Sicht, Abholung, Verkehr.' +
-      (r.noAreas ? ' Hinweis: Hier sind keine Wohngebiete kartiert, die Ortsgrenze ist nur geschätzt.' : ''));
+      (r.noAreas ? ' Hinweis: Hier sind keine Wohngebiete kartiert, die Ortsgrenze ist nur geschätzt.' : '') + chainStatus(r.chainInfo));
     if (planMode === 'pruefung') startExam();
     renderResults();
     if (planMode === 'pruefung' && state.exam) drawExam(true);
@@ -1891,6 +2071,7 @@ function snapshot(c) {
     turns: v.turns, decisions: v.decisions, crossings: v.crossings,
     steps: Planner.describe(G, c.tr).map(s => ({ at: s.at, kind: s.kind, text: s.text, options: s.options || 0 })),
     startStreet: names.start, endStreet: names.end, checked: false, place: c.place,
+    link: c.link === undefined ? undefined : c.link && { dist: Math.round(c.link.dist), gap: !!c.link.gap, ll: c.link.pts ? c.link.pts.map(p => G.toLatLon(p)) : null },
   };
 }
 function examSettings() {
@@ -1999,6 +2180,7 @@ function drawExam(fit = false) {
       L.marker(llAtDist(ll, s.at), { icon: L.divIcon({ className: '', html: `<div class="lf-mark lf-turn" style="background:${color}"></div>`, iconSize: [12, 12], iconAnchor: [6, 6] }), keyboard: false })
         .bindTooltip(`Trail ${i + 1}, ${s.at} m: ${s.text}`).addTo(trailLayer);
     });
+    if (t.link && t.link.ll) L.polyline(t.link.ll, { color: '#1d2620', weight: 3, opacity: 0.75, dashArray: '4 7' }).addTo(trailLayer).bindTooltip(`Fußweg zu Trail ${i + 1}: ${t.link.dist} m`, { sticky: true });
     L.marker(ll[0], { icon: icon('', color, 'S' + (i + 1)) }).bindTooltip(`Trail ${i + 1}: Start`).addTo(trailLayer);
     L.marker(ll[ll.length - 1], { icon: icon('lf-end', color, 'Z' + (i + 1)) }).bindTooltip(`Trail ${i + 1}: Ziel`).addTo(trailLayer);
   });
@@ -2027,13 +2209,59 @@ async function replaceTrail(i, btn) {
     const obstacles = ex.trails.filter((_, k) => k !== i).map(t => Pruefung.obstacle(t, G.fromLatLon));
     const oldStart = G.fromLatLon(old.ll[0]);
     const isOld = c => Math.abs(c.v.length - old.length) < 5 && Math.hypot(c.v.pts[0][0] - oldStart[0], c.v.pts[0][1] - oldStart[1]) < 5;
-    const fits = state.examPools[pk].list.filter(c => !isOld(c) && obstacles.every(o => Planner.compatible(c, o, s.minDist)));
+    // Kette: Ersatz muss den Übergang vom vorigen Ziel und zum nächsten Start einhalten (75–250 m Fußweg, 75 m Luftlinie,
+    // Fußwege meiden spätere Trails); frühere Fußwege dürfen den Ersatz nicht berühren
+    const same = t => t && t.place === old.place;
+    const prevT = i > 0 && same(ex.trails[i - 1]) && old.link && !old.link.gap ? ex.trails[i - 1] : null;
+    const nextT = same(ex.trails[i + 1]) && ex.trails[i + 1].link && !ex.trails[i + 1].link.gap ? ex.trails[i + 1] : null;
+    let cands = state.examPools[pk].list;
+    if (prevT) {
+      const pe = G.fromLatLon(prevT.ll[prevT.ll.length - 1]);
+      Planner.prepare(G);
+      const starts = (G._starts[lv] || []).filter(sg => sg.pts.some(p => Math.hypot(p[0] - pe[0], p[1] - pe[1]) <= 250));
+      if (starts.length) {
+        const near = Planner.pool(G, lv, Planner.rng(Date.now() % 1000003), { want: 30, maxTries: 800, mode: 'pruefung', starts, searchSteps: 20000 });
+        near.list.forEach((c, k) => { c.G = G; c.place = place.id; c.id = 'nah' + k + ':' + c.id; });
+        cands = near.list.concat(cands);
+      }
+    }
+    const W = G._walk || (G._walk = Planner.walkGraph(G));
+    const pts = t => t.ll.map(G.fromLatLon);
+    const after = ex.trails.slice(i + 1).filter(same), after2 = ex.trails.slice(i + 2).filter(same);
+    const blockAfter = after.map(t => Planner.blockedEdges(W, pts(t), s.minDist)), blockAfter2 = blockAfter.slice(1);
+    const blockNext = nextT ? Planner.blockedEdges(W, pts(nextT), s.minDist, G.fromLatLon(nextT.ll[0]), 20) : null;
+    const earlierWalks = ex.trails.slice(0, i).filter(t => same(t) && t.link && t.link.ll).map(t => Pruefung.obstacle({ ll: t.link.ll }, G.fromLatLon));
+    function chainFit(c) {
+      if (!earlierWalks.every(o => Planner.compatible(c, o, s.minDist))) return null;
+      const st = c.v.pts[0], en = c.v.pts[c.v.pts.length - 1];
+      let lin = null, lout = null;
+      if (prevT) {
+        const pe = G.fromLatLon(prevT.ll[prevT.ll.length - 1]);
+        if (Math.hypot(pe[0] - st[0], pe[1] - st[1]) < 75) return null;
+        lin = Planner.walkPath(G, W, pe, st, [Planner.blockedEdges(W, c.v.pts, s.minDist, st, 20), ...blockAfter], 250);
+        if (!lin || lin.dist < 75) return null;
+      }
+      if (nextT) {
+        const ns = G.fromLatLon(nextT.ll[0]);
+        if (Math.hypot(en[0] - ns[0], en[1] - ns[1]) < 75) return null;
+        lout = Planner.walkPath(G, W, en, ns, [blockNext, ...blockAfter2], 250);
+        if (!lout || lout.dist < 75) return null;
+      }
+      return { lin, lout };
+    }
+    const fits = cands.filter(c => !isOld(c) && obstacles.every(o => Planner.compatible(c, o, s.minDist)));
     if (!fits.length) { setStatus(`Für Trail ${i + 1} habe ich keinen Ersatz gefunden, der zu den anderen Trails passt. Trail ${i + 1} bleibt unverändert.`, true); return; }
     const seen = state.examSeen[i] || (state.examSeen[i] = new Set());
-    let next = fits.find(c => !seen.has(c.id));
-    if (!next) { seen.clear(); next = fits[0]; }
+    const ordered = fits.filter(c => !seen.has(c.id)).concat(fits.filter(c => seen.has(c.id)));
+    let next = null, fit = null;
+    for (const c of ordered) { fit = chainFit(c); if (fit) { next = c; break; } }
+    if (!next) { setStatus(`Für Trail ${i + 1} habe ich keinen Ersatz gefunden, der in die Kette passt (75–250 m Fußweg zum vorigen Ziel und zum nächsten Start). Trail ${i + 1} bleibt unverändert.`, true); return; }
+    if (!fits.some(c => !seen.has(c.id))) seen.clear();
     seen.add(next.id);
+    next.link = old.link === undefined ? undefined : fit.lin ? { dist: fit.lin.dist, gap: false, pts: fit.lin.pts }
+      : old.link && old.link.gap && i > 0 ? (() => { const pe = G.fromLatLon(ex.trails[i - 1].ll[ex.trails[i - 1].ll.length - 1]); return { gap: true, dist: Math.hypot(pe[0] - next.v.pts[0][0], pe[1] - next.v.pts[0][1]) }; })() : old.link;
     ex.trails[i] = snapshot(next);
+    if (fit.lout) ex.trails[i + 1].link = { dist: Math.round(fit.lout.dist), gap: false, ll: fit.lout.pts.map(p => G.toLatLon(p)) };
     persistExam(); renderExam();
     setStatus(`Trail ${i + 1} ersetzt (${ex.trails[i].length} m).${ex.trails[i].harder ? ` Hinweis: ${ex.trails[i].harder}.` : ''} Bitte abfahren und danach abhaken.`);
   } catch (e) {
@@ -2087,6 +2315,7 @@ function renderExam() {
         <span class="lay">legen bis <b>${layTime(t.level)}</b></span></div>
       <div class="stats"><span><b>${t.length}</b> m</span><span><b>${t.turns}</b> Richtungswechsel</span><span><b>${t.decisions - t.turns}</b> zusätzliche Entscheidungsstelle${t.decisions - t.turns === 1 ? '' : 'n'}</span><span><b>${t.crossings}</b> Kreuzung${t.crossings === 1 ? '' : 'en'}</span><span>Suchzeit <b>${lv.searchMin}</b> min</span></div>
       <div class="streets"></div>
+      ${t.link === undefined ? '' : `<div class="streets">${t.link === null ? 'Beginn der Kette' : t.link.gap ? `<b style="color:var(--warn)">Lücke:</b> neuer Abschnitt, ${t.link.dist} m Luftlinie vom vorigen Ziel` : `Weg vom vorigen Ziel: <b>${t.link.dist} m</b>`}</div>`}
       ${t.harder ? `<div class="warnbox"><b>Hinweis:</b> ${esc(t.harder)}. PO-konform und zulässig; an diesen Stellen könnte der Hund anders abbiegen. Beim Abfahren ansehen.</div>` : ''}
       <details class="checks steps-box"><summary>Trailverlauf: ${t.steps.length} Schritte</summary><ol class="steps"></ol></details>
       <label class="check exam-check"><input type="checkbox"${t.checked ? ' checked' : ''}> geprüft (abgefahren)</label>
