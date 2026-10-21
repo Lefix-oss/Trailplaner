@@ -3,3 +3,6 @@
 
 # Echte Namen aus Prüfungen bleiben lokal
 testdaten/
+
+# Prüfungsordnung: Veröffentlichung nur mit Genehmigung des DVG
+*.pdf

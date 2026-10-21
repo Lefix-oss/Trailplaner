@@ -24,6 +24,11 @@ test('MT-I mit mehr Entscheidungsstellen als die Vereinsvorgabe wird verworfen',
   assert.equal(check(v, /Vereinsvorgabe: höchstens 2 Entscheidungsstellen/).ok, false);
 });
 
+test('Vereinsvorgabe: MT-I höchstens 2, MT-II höchstens 4 Entscheidungsstellen', () => {
+  assert.equal(Planner.LEVELS['MT-I'].maxDecisions, 2);
+  assert.equal(Planner.LEVELS['MT-II'].maxDecisions, 4);
+});
+
 // Reihe 1 nach Osten über Spalte 3 (Kreisstraße bzw. Bundesstraße)
 const crossing = (G, level) => ({ level, mode: 'pruefung', legs: [leg(G, [1, 2], [1, 3], 30), leg(G, [1, 3], [1, 4]), leg(G, [1, 4], [2, 4], 0, 88)] });
 
