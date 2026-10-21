@@ -81,7 +81,7 @@ h2 {
 }
 section { min-width: 0; }
 label.lbl { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
-input[type=text], input[type=time], select {
+input[type=text], input[type=time], input[type=date], select, textarea {
   font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line);
   border-radius: 6px; padding: 9px 10px; width: 100%; min-width: 0;
 }
@@ -157,6 +157,14 @@ ol.steps li.end .t { font-weight: 600; }
 .streets { padding: 6px 14px 0; font-size: 14px; color: var(--muted); }
 .exam-check { padding: 10px 14px 0; font-weight: 600; }
 .exam-bar { margin-top: 10px; flex-wrap: wrap; gap: 6px; }
+.assign { display: grid; gap: 12px; margin-top: 22px; }
+.assign textarea { min-height: 110px; resize: vertical; font-size: 14px; line-height: 1.4; }
+.assign .warnbox { margin: 0; }
+.assign-table { width: 100%; border-collapse: collapse; font-size: 14px; }
+.assign-table th { text-align: left; font: 600 13px/1.2 var(--display); text-transform: uppercase; letter-spacing: .06em; color: var(--muted); padding: 4px 4px 6px; }
+.assign-table td { padding: 3px 4px; vertical-align: middle; }
+.assign-table td:first-child { white-space: nowrap; font-weight: 600; }
+.assign-table select { padding: 6px 8px; font-size: 14px; }
 .linkbtn { display: inline-block; font: 600 13px/1 var(--body); padding: 7px 10px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--ink); text-decoration: none; }
 .linkbtn:hover { border-color: var(--muted); }
 .wa + .wa { margin-top: 8px; }
@@ -1605,7 +1613,69 @@ function renderExam() {
     cards.append(card);
   });
   host.append(cards);
+  renderAssign(host);
   drawExam();
+}
+// Prüfungstag: Namen eintragen, zuwürfeln oder von Hand zuteilen (Teams nur innerhalb ihrer Stufe)
+function renderAssign(host) {
+  const ex = state.exam;
+  const sec = document.createElement('div'); sec.className = 'assign';
+  const h = document.createElement('h2'); h.textContent = '5 · Zuteilung (Prüfungstag)'; sec.append(h);
+  const open = ex.trails.map((t, i) => (t.checked ? 0 : i + 1)).filter(Boolean);
+  if (open.length) {
+    const w = document.createElement('div'); w.className = 'warnbox';
+    w.innerHTML = `<b>Achtung:</b> Trail ${open.join(', ')} ${open.length === 1 ? 'ist' : 'sind'} noch nicht als geprüft markiert.`;
+    sec.append(w);
+  }
+  const field = (label, el) => { const d = document.createElement('div'); const l = document.createElement('label'); l.className = 'lbl'; l.textContent = label; d.append(l, el); return d; };
+  const date = document.createElement('input'); date.type = 'date'; date.value = ex.date || '';
+  date.onchange = () => { ex.date = date.value; persistExam(); };
+  sec.append(field('Prüfungsdatum', date));
+  const list = (label, names, set) => {
+    const ta = document.createElement('textarea'); ta.value = names.join('\n'); ta.placeholder = 'Ein Name pro Zeile';
+    ta.onchange = () => { set(Pruefung.parseNames(ta.value)); persistExam(); drawTable(); };
+    sec.append(field(label, ta));
+  };
+  for (const lv of Pruefung.LEVEL_KEYS) {
+    const n = ex.trails.filter(t => t.level === lv).length;
+    if (n) list(`Teams ${lv} (${n} Trail${n === 1 ? '' : 's'}) – Format „Hundeführer mit Hund“`, ex.names.teams[lv], v => { ex.names.teams[lv] = v; });
+  }
+  list(`Versteckpersonen (${ex.trails.length} Trails)`, ex.names.vps, v => { ex.names.vps = v; });
+  const row = document.createElement('div'); row.className = 'row'; row.style.gap = '6px';
+  const note = document.createElement('p'); note.className = 'hint';
+  const bDraw = mk('🎲 Zuwürfeln', () => {
+    if (ex.assign.some(a => a.team || a.vp) && !confirm('Bisherige Zuteilung überschreiben?')) return;
+    const r = Pruefung.draw(ex.trails, ex.names.teams, ex.names.vps, Planner.rng(Date.now() % 1000003));
+    ex.assign = r.assign;
+    const rest = r.unplaced.teams.concat(r.unplaced.vps);
+    note.textContent = rest.length ? `Nicht zugeteilt (mehr Namen als Trails): ${rest.join(', ')}` : '';
+    persistExam(); drawTable();
+  });
+  bDraw.className = 'primary';
+  const bClear = mk('Leeren', () => { ex.assign = ex.trails.map(() => ({ team: '', vp: '' })); note.textContent = ''; persistExam(); drawTable(); });
+  row.append(bDraw, bClear); sec.append(row, note);
+  const table = document.createElement('table'); table.className = 'assign-table'; sec.append(table);
+  const select = (names, value, onPick) => {
+    const s = document.createElement('select');
+    const opts = [''].concat(names, value && !names.includes(value) ? [value] : []);
+    for (const n of opts) { const o = document.createElement('option'); o.value = n; o.textContent = n || '—'; s.append(o); }
+    s.value = value; s.onchange = () => onPick(s.value); return s;
+  };
+  function drawTable() {
+    table.innerHTML = '<thead><tr><th>Trail</th><th>Versteckperson</th><th>Team</th></tr></thead>';
+    const body = document.createElement('tbody');
+    ex.trails.forEach((t, i) => {
+      const tr = document.createElement('tr');
+      const td0 = document.createElement('td'); td0.textContent = `${i + 1} · ${t.level}`;
+      const pick = fieldName => v => { Pruefung.setCell(ex.assign, i, fieldName, v); persistExam(); drawTable(); };
+      const td1 = document.createElement('td'); td1.append(select(ex.names.vps, ex.assign[i].vp, pick('vp')));
+      const td2 = document.createElement('td'); td2.append(select(ex.names.teams[t.level] || [], ex.assign[i].team, pick('team')));
+      tr.append(td0, td1, td2); body.append(tr);
+    });
+    table.append(body);
+  }
+  drawTable();
+  host.append(sec);
 }
 
 function renderResults() {
