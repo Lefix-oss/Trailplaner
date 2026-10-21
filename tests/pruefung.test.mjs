@@ -55,7 +55,7 @@ test('serializeExam/parseExam: Hin und zurück ohne Verlust', () => {
   const exam = { format: 'trailplaner-pruefung', version: 1, savedAt: '2026-10-22T10:00:00Z', placeName: 'Musterdorf',
     center: { lat: 49.65, lon: 9.95 }, settings: { radius: 1200, minDist: 30, terrain: 'ort', allowPaths: false, avoidLoops: true, startTime: '10:00' },
     date: '2026-10-31', trails: [{ level: 'MT-I', ll: [[49.65, 9.95], [49.651, 9.951]], length: 305, turns: 1, decisions: 1, crossings: 0,
-      steps: [{ at: 0, kind: 'start', text: 'Start' }], startStreet: 'Industriestraße', endStreet: 'Bavariastraße', checked: true }],
+      steps: [{ at: 0, kind: 'start', text: 'Start' }], startStreet: 'Industriestraße', endStreet: 'Bavariastraße', checked: true, harder: 'Mehr Abzweige als vorgesehen' }],
     names: { teams: { 'MT-I': ['Anna mit Luna'], 'MT-II': [], 'MT-III': [] }, vps: ['VP1'] }, assign: [{ team: 'Anna mit Luna', vp: 'VP1' }] };
   assert.deepEqual(Pruefung.parseExam(Pruefung.serializeExam(exam)), exam);
 });
@@ -65,6 +65,22 @@ test('parseExam lehnt fremde und kaputte Dateien mit deutscher Meldung ab', () =
   assert.throws(() => Pruefung.parseExam('{"format":"x"}'), /kein gespeicherter Trailplan/);
   assert.throws(() => Pruefung.parseExam('{"format":"trailplaner-pruefung","version":2,"trails":[]}'), /neueren Version/);
   assert.throws(() => Pruefung.parseExam('{"format":"trailplaner-pruefung","version":1,"trails":[{"level":"MT-I","ll":[[1,2]]}]}'), /Trail 1 hat keine Strecke/);
+});
+
+test('parseExam lehnt Trails mit kaputten Feldern ab', () => {
+  const file = trail => JSON.stringify({ format: 'trailplaner-pruefung', version: 1, center: { lat: 49.6, lon: 9.9 }, trails: [trail] });
+  const ok = { level: 'MT-I', ll: [[49.6, 9.9], [49.61, 9.91]], steps: [] };
+  assert.doesNotThrow(() => Pruefung.parseExam(file(ok)));
+  assert.throws(() => Pruefung.parseExam(file({ ...ok, level: undefined })), /Trail 1 ist beschädigt/);
+  assert.throws(() => Pruefung.parseExam(file({ ...ok, level: 'MT-X' })), /Trail 1 ist beschädigt/);
+  assert.throws(() => Pruefung.parseExam(file({ ...ok, steps: 'x' })), /Trail 1 ist beschädigt/);
+  assert.throws(() => Pruefung.parseExam(file({ ...ok, ll: ['a', 'b'] })), /Trail 1 hat keine Strecke/);
+  assert.throws(() => Pruefung.parseExam(JSON.stringify({ format: 'trailplaner-pruefung', version: 1, center: { lat: 'x' }, trails: [ok] })), /beschädigt/);
+});
+
+test('parseExam setzt fehlenden Schwierigkeitshinweis auf leer', () => {
+  const ex = Pruefung.parseExam('{"format":"trailplaner-pruefung","version":1,"trails":[{"level":"MT-I","ll":[[1,2],[1,3]]}]}');
+  assert.equal(ex.trails[0].harder, '');
 });
 
 test('parseExam ergänzt fehlende Zuteilung und Namenslisten', () => {
