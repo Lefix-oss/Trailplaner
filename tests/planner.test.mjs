@@ -79,6 +79,14 @@ test('Auch Zufahrten zählen als mögliche Abzweigung, sind aber keine Kreuzung'
   assert.equal(G.deg(3), 1);       // Gehweg neben der Straße ist kein Abzweig
 });
 
+test('PO: „Kreuzungen“ und „befahrener Straßenbereich“ beschreiben das erlaubte Gelände, keine Mindestzahl', () => {
+  const G = grid();
+  const tr = { level: 'MT-II', mode: 'pruefung', legs: [leg(G, [1, 0], [1, 1], 60), leg(G, [1, 1], [1, 2]), leg(G, [1, 2], [2, 2]), leg(G, [2, 2], [3, 2], 0, 88)] };
+  const v = Planner.validate(G, tr);
+  assert.equal(check(v, /Kreuzungen \(mind/), undefined);
+  assert.equal(check(v, /befahrener Straßenbereich/), undefined);
+});
+
 // ---------- Straßen, Wege ----------
 // Reihe 1 nach Osten über Spalte 3 (Kreisstraße bzw. Bundesstraße)
 const crossing = (G, level) => ({ level, mode: 'pruefung', legs: [leg(G, [1, 2], [1, 3], 30), leg(G, [1, 3], [1, 4]), leg(G, [1, 4], [2, 4], 0, 88)] });

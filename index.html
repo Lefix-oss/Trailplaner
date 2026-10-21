@@ -168,6 +168,14 @@ ol.steps li.end .t { font-weight: 600; }
 .exam-check { padding: 10px 14px 0; font-weight: 600; }
 .exam-bar { margin-top: 10px; flex-wrap: wrap; gap: 6px; }
 .reset-btn { margin-top: 8px; }
+/* Radar während der Planung: nur transform/opacity, damit es auch bei voller Rechenlast flüssig läuft */
+.radar { position: relative; border-radius: 50%; pointer-events: none; }
+.radar::before, .radar::after { content: ''; position: absolute; inset: 0; border-radius: 50%; border: 3px solid var(--radar); animation: radar-ping 1.8s ease-out infinite; }
+.radar::after { animation-delay: .9s; }
+.radar-sweep { position: absolute; inset: 0; border-radius: 50%; animation: radar-spin 2.4s linear infinite; }
+@keyframes radar-ping { from { transform: scale(.04); opacity: .95; } to { transform: scale(1); opacity: 0; } }
+@keyframes radar-spin { to { transform: rotate(360deg); } }
+@media (prefers-reduced-motion: reduce) { .radar::before, .radar::after, .radar-sweep { animation: none; } }
 .assign { display: grid; gap: 12px; margin-top: 22px; }
 .assign textarea { min-height: 110px; resize: vertical; font-size: 14px; line-height: 1.4; }
 .assign .warnbox { margin: 0; }
@@ -329,7 +337,8 @@ const Planner = (() => {
   // Begriffe: Richtungswechsel = der Trail biegt an einer Abzweigung ab (Pflicht: mind. minTurns).
   // Zusätzliche Entscheidungsstelle = Abzweigung, an der der Trail geradeaus weiterläuft (keine PO-Grenze,
   // möglichst vermeiden). Kreuzung = Stelle, an der sich mind. vier begehbare Wege treffen.
-  // Auslegung, nicht wörtlich PO: „ca.“ = ±10 %, „Kreuzungen“ = minCrossings, „befahrener Straßenbereich“ = minTrafficM.
+  // „ca.“ = ±10 % (die PO nennt keine Toleranz). „Kreuzungen“ und „befahrener Straßenbereich“ stehen in der PO wie
+  // „Wald, Wiese“ in der Aufzählung des Geländes: Sie sind erlaubt, aber keine Pflicht (minCrossings/minTrafficM = 0).
   const LEVELS = {
     'MT-I': {
       key: 'MT-I', length: 300, minAgeH: 2, searchMin: 15,
@@ -339,13 +348,13 @@ const Planner = (() => {
     },
     'MT-II': {
       key: 'MT-II', length: 600, minAgeH: 4, searchMin: 30,
-      minTurns: 2, minCrossings: 1, minTrafficM: 0,
+      minTurns: 2, minCrossings: 0, minTrafficM: 0,
       allowed: ['quiet', 'medium'],
       terrain: 'belebtes Wohngebiet, Wald, Wiese, Kreuzungen',
     },
     'MT-III': {
       key: 'MT-III', length: 1000, minAgeH: 15, searchMin: 45,
-      minTurns: 4, minCrossings: 2, minTrafficM: 50,
+      minTurns: 4, minCrossings: 0, minTrafficM: 0,
       allowed: ['quiet', 'medium', 'busy'],
       terrain: 'belebtes Wohngebiet, Wald, Wiese, Kreuzungen, befahrener Straßenbereich',
     },
@@ -1319,7 +1328,7 @@ const store = {
 // Vereinsbezogene Angaben an einer Stelle (Grundlage für den späteren Mehrvereinsbetrieb, siehe docs/architektur)
 const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946] };
 // Versionsnummer: jede Änderung zählt um 0.1 hoch (V1.0 … V1.9, dann V2.0 …); Änderungen stehen in CHANGELOG.md
-const APP_VERSION = '1.1';
+const APP_VERSION = '1.2';
 document.getElementById('appVersion').textContent = 'V' + APP_VERSION;
 const saved = store.get();
 function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }
@@ -1411,6 +1420,30 @@ const TrailToggle = L.Control.extend({
 });
 new TrailToggle().addTo(map);
 // Suchkreis je Ort; der markierte Ort kräftiger, ab zwei Orten mit Kennbuchstabe
+// Radar über den Suchkreisen der gerade geplanten Orte
+const radarLayer = L.layerGroup();
+let radarPlaces = null;
+function radarDraw() {
+  radarLayer.clearLayers();
+  for (const p of radarPlaces || []) {
+    if (!p.center) continue;
+    const c = map.latLngToLayerPoint([p.center.lat, p.center.lon]);
+    const e = map.latLngToLayerPoint([p.center.lat, p.center.lon + p.radius / (111320 * Math.cos(p.center.lat * Math.PI / 180))]);
+    const d = Math.max(20, Math.round(2 * Math.abs(e.x - c.x))), col = PLACE_COLORS[p.id] || '#e8590c';
+    const html = `<div class="radar" style="width:${d}px;height:${d}px;--radar:${col}"><div class="radar-sweep" style="background:conic-gradient(from 0deg, transparent 0 72%, ${col}66 100%)"></div></div>`;
+    L.marker([p.center.lat, p.center.lon], { icon: L.divIcon({ className: '', html, iconSize: [d, d], iconAnchor: [d / 2, d / 2] }), interactive: false, keyboard: false }).addTo(radarLayer);
+  }
+}
+function radarStart(places) {
+  radarPlaces = places;
+  // ganzen Suchkreis zeigen, damit das Radar zu sehen ist (nach der Planung zoomt die Karte auf die Trails)
+  const b = L.latLngBounds([]);
+  for (const p of places) if (p.center) b.extend(L.latLng(p.center.lat, p.center.lon).toBounds(2 * p.radius));
+  if (b.isValid()) map.fitBounds(b, { padding: [10, 10], animate: false });
+  radarLayer.addTo(map); radarDraw();
+}
+function radarStop() { radarPlaces = null; radarLayer.clearLayers(); radarLayer.remove(); }
+map.on('zoomend', () => { if (radarPlaces) radarDraw(); });
 function drawArea() {
   areaLayer.clearLayers();
   for (const p of state.places) {
@@ -1724,6 +1757,7 @@ async function run() {
   if (planMode === 'pruefung' && state.exam && !confirm('Neu planen verwirft den aktuellen Prüfungsstand. Fortfahren?')) return;
   const btn = $('#planBtn'); btn.disabled = true;
   try {
+    radarStart(state.places.filter(p => ids.includes(p.id)));
     const r = await planPlaces(ids, planMode);
     if (!r.ok) {
       state.plans = []; state.pools = null; state.planTeams = null;
@@ -1743,7 +1777,7 @@ async function run() {
   } catch (e) {
     console.error(e);
     setStatus(`Interner Fehler bei der Planung: ${e && e.message ? e.message : e}. Bitte melde mir diesen Text.`, true);
-  } finally { btn.disabled = false; }
+  } finally { btn.disabled = false; radarStop(); }
 }
 
 // ---------- Ausgabe ----------
@@ -1962,6 +1996,7 @@ async function replaceTrail(i, btn) {
   btn.disabled = true; btn.textContent = 'Suche Ersatz …';
   try {
     const place = Pruefung.placeOf(ex, old);
+    radarStart([place]);
     let G;
     try { G = await graphFor(place, place.radius || s.radius || 1200); }
     catch { setStatus(`OpenStreetMap ist gerade nicht erreichbar. Trail ${i + 1} bleibt unverändert.`, true); return; }
@@ -1990,6 +2025,7 @@ async function replaceTrail(i, btn) {
     console.error(e);
     setStatus(`Interner Fehler beim Ersetzen: ${e && e.message ? e.message : e}. Trail ${i + 1} bleibt unverändert.`, true);
   } finally {
+    radarStop();
     if (btn.isConnected) { btn.disabled = false; btn.textContent = 'Ersetzen'; }
   }
 }
@@ -2001,6 +2037,7 @@ async function replanPlace(pid) {
   const btn = $('#planBtn'); btn.disabled = true;
   try {
     if (!state.teams.some(t => t.place === pid)) { setStatus(`Ort ${pid} hat keine Teams: bei den Teams Ort ${pid} auswählen. Der bisherige Stand bleibt.`, true); return; }
+    radarStart([place]);
     const r = await planPlaces([pid], 'pruefung', ex.trails.filter(t => t.place !== pid).map(t => t.ll));
     if (!r.ok) { setStatus(`${r.msg} Der bisherige Stand bleibt.`, true); return; }
     const snap = { id: place.id, name: place.name, center: place.center, terrain: place.terrain, radius: place.radius };
@@ -2012,7 +2049,7 @@ async function replanPlace(pid) {
   } catch (e) {
     console.error(e);
     setStatus(`Interner Fehler bei der Planung: ${e && e.message ? e.message : e}. Der bisherige Stand bleibt.`, true);
-  } finally { btn.disabled = false; }
+  } finally { btn.disabled = false; radarStop(); }
 }
 // Ortszusatz im Prüfungsstand, nur wenn er mehrere Orte hat
 const examPlaceSuffix = (ex, t) => (ex.places.length > 1 ? ' · ' + placeLabel(Pruefung.placeOf(ex, t)) : '');

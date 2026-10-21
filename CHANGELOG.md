@@ -2,6 +2,11 @@
 
 Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Die aktuelle Version steht in der App neben der Überschrift.
 
+## V1.2 – 22.10.2026
+
+- **Radar beim Planen:** Solange der Planer rechnet, pulsiert über jedem Suchkreis ein Radar mit umlaufendem Lichtkegel. Die Karte zeigt dabei den ganzen Kreis. Das gilt für „Trails planen“, „Nur Ort … neu planen“ und „Ersetzen“.
+- **PO-Auslegung „Kreuzungen“ und „befahrener Straßenbereich“:** Die PO zählt beides beim Gelände auf, genau wie „Wald, Wiese“. Es ist also erlaubt, aber keine Pflicht. Ein MT-II-Trail muss deshalb keine Kreuzung mehr enthalten, ein MT-III-Trail keinen Mindestanteil an Straßen mit Verkehr.
+
 ## V1.1 – 22.10.2026
 
 **Planung: Richtungswechsel und Entscheidungsstellen getrennt**
