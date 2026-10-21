@@ -1180,6 +1180,11 @@ const Pruefung = (() => {
     return [head, ...rows].join('\n\n');
   }
 
+  // Zwischenspeicher für OSM-Wegedaten: Schlüssel je Ort (auf ca. 10 m) und Radius, gültig 14 Tage
+  const OSM_CACHE_DAYS = 14;
+  function osmKey(c, radius) { return `${c.lat.toFixed(4)},${c.lon.toFixed(4)},${radius}`; }
+  function osmFresh(savedAt, now) { return typeof savedAt === 'number' && now - savedAt < OSM_CACHE_DAYS * 864e5; }
+
   function serializeExam(exam) { return JSON.stringify(exam, null, 1); }
 
   function parseExam(text) {
@@ -1207,7 +1212,7 @@ const Pruefung = (() => {
     return ex;
   }
 
-  return { FORMAT, VERSION, LEVEL_KEYS, parseNames, splitTeam, draw, setCell, obstacle, shareText, serializeExam, parseExam };
+  return { FORMAT, VERSION, LEVEL_KEYS, parseNames, splitTeam, draw, setCell, obstacle, shareText, osmKey, osmFresh, serializeExam, parseExam };
 })();
 if (typeof module !== 'undefined') module.exports = Pruefung;
 </script>
@@ -1402,12 +1407,42 @@ renderTeams();
 
 // ---------- Daten laden ----------
 const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.private.coffee/api/interpreter', 'https://maps.mail.ru/osm/tools/overpass/api/interpreter'];
+// Wegedaten bleiben im Browser (IndexedDB), damit Planen und „Ersetzen“ nicht jedes Mal auf überlastete Server warten
+const osmCache = {
+  db: null,
+  open() {
+    if (!this.db) this.db = new Promise((res, rej) => {
+      const r = indexedDB.open('trailplaner', 1);
+      r.onupgradeneeded = () => r.result.createObjectStore('osm');
+      r.onsuccess = () => res(r.result); r.onerror = () => rej(r.error);
+    });
+    return this.db;
+  },
+  async get(key) {
+    try { const db = await this.open(); return await new Promise(res => { const q = db.transaction('osm').objectStore('osm').get(key); q.onsuccess = () => res(q.result || null); q.onerror = () => res(null); }); }
+    catch { return null; }
+  },
+  async set(key, val) { try { const db = await this.open(); db.transaction('osm', 'readwrite').objectStore('osm').put(val, key); } catch {} },
+};
 async function loadOSM(c, radius) {
+  const key = Pruefung.osmKey(c, radius), cached = await osmCache.get(key);
+  if (cached && Pruefung.osmFresh(cached.savedAt, Date.now())) return cached.data;
+  try {
+    const data = await fetchOSM(c, radius);
+    osmCache.set(key, { savedAt: Date.now(), data });
+    return data;
+  } catch (e) {
+    if (cached) return cached.data;   // Server alle überlastet: lieber ältere Daten als gar keine
+    throw e;
+  }
+}
+async function fetchOSM(c, radius) {
   const dLat = (radius + 50) / 110574, dLon = (radius + 50) / (111320 * Math.cos(c.lat * Math.PI / 180));
   const bbox = [c.lat - dLat, c.lon - dLon, c.lat + dLat, c.lon + dLon].map(v => v.toFixed(6)).join(',');
   const q = `[out:json][timeout:60];(way["highway"](${bbox});way["landuse"~"^(residential|retail|commercial)$"](${bbox});relation["landuse"~"^(residential|retail|commercial)$"](${bbox});node["barrier"](${bbox}););out body geom;`;
   let lastErr;
-  for (const url of OVERPASS) {
+  for (const [k, url] of OVERPASS.entries()) {
+    if (k > 0) setStatus(`OpenStreetMap-Server ${k} antwortet nicht, versuche Server ${k + 1} von ${OVERPASS.length} …`);
     // Ein hängender Server darf die Suche nicht endlos blockieren: kurz nach dem Overpass-Timeout (60 s) zum nächsten
     const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 65000);
     try {

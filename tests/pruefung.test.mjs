@@ -92,6 +92,18 @@ test('shareText listet Start- bzw. Endpunkte mit Stufe, VP und Team', () => {
   assert.ok(Pruefung.shareText(ex, 'end', link).startsWith('Endpunkte Prüfung Musterdorf\n\nTrail 1 (MT-I) – VP: VP1 – Team: Anna mit Luna\nL(49.2,9.2)'));
 });
 
+test('osmKey: gleicher Ort (auf ca. 10 m) und Radius ergeben denselben Schlüssel', () => {
+  assert.equal(Pruefung.osmKey({ lat: 49.65312, lon: 9.94528 }, 1200), Pruefung.osmKey({ lat: 49.65309, lon: 9.94531 }, 1200));
+  assert.notEqual(Pruefung.osmKey({ lat: 49.6531, lon: 9.9453 }, 1200), Pruefung.osmKey({ lat: 49.6531, lon: 9.9453 }, 1600));
+});
+
+test('osmFresh: Zwischenspeicher gilt 14 Tage', () => {
+  const day = 864e5, now = Date.UTC(2026, 9, 21);
+  assert.equal(Pruefung.osmFresh(now - 13 * day, now), true);
+  assert.equal(Pruefung.osmFresh(now - 15 * day, now), false);
+  assert.equal(Pruefung.osmFresh(undefined, now), false);
+});
+
 test('parseExam ergänzt fehlende Zuteilung und Namenslisten', () => {
   const ex = Pruefung.parseExam('{"format":"trailplaner-pruefung","version":1,"trails":[{"level":"MT-II","ll":[[1,2],[1,3]]}]}');
   assert.deepEqual(ex.assign, [{ team: '', vp: '' }]);
