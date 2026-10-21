@@ -14,14 +14,14 @@ function grid(allowPaths = false) {
 }
 const check = (v, re) => v.checks.find(c => re.test(c.label));
 
-test('MT-I mit mehr Entscheidungsstellen als die PO erlaubt ist nicht PO-konform', () => {
+test('MT-I mit mehr Entscheidungsstellen als die Vereinsvorgabe wird verworfen', () => {
   const G = grid();
   // 30 m + 90 m geradeaus, links ab, 90 m + 88 m geradeaus: 3 Entscheidungsstellen, 1 Richtungswechsel
   const tr = { level: 'MT-I', mode: 'pruefung', legs: [leg(G, [1, 0], [1, 1], 60), leg(G, [1, 1], [1, 2]), leg(G, [1, 2], [2, 2]), leg(G, [2, 2], [3, 2], 0, 88)] };
   const v = Planner.validate(G, tr);
   assert.equal(v.decisions, 3);
   assert.equal(v.ok, false);
-  assert.equal(check(v, /höchstens 2 Entscheidungsstellen/).ok, false);
+  assert.equal(check(v, /Vereinsvorgabe: höchstens 2 Entscheidungsstellen/).ok, false);
 });
 
 // Reihe 1 nach Osten über Spalte 3 (Kreisstraße bzw. Bundesstraße)

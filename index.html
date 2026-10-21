@@ -309,6 +309,9 @@ const Planner = (() => {
   'use strict';
 
   // ---------- Prüfungsstufen (DVG-PO 05/2024, Abschnitt B.1) ----------
+  // Aus der PO: length, minAgeH, searchMin, minTurns, Gelände (allowed/terrain), „Kreuzungen“ ab MT-II,
+  // „befahrener Straßenbereich“ in MT-III. Richtungswechsel nur dort, wo der Hund mehrere Möglichkeiten hat.
+  // Vereinsvorgabe, nicht PO: maxTurns, maxDecisions sowie die Mindestzahlen minCrossings und minTrafficM.
   const LEVELS = {
     'MT-I': {
       key: 'MT-I', length: 300, minAgeH: 2, searchMin: 15,
@@ -806,8 +809,9 @@ const Planner = (() => {
       if (!crossOk(lvl, G, node)) badCross = true;
     }
     add(turns >= lvl.minTurns, `PO: mind. ${lvl.minTurns} Richtungswechsel mit Auswahl`, `${turns} Richtungswechsel`);
-    add(turns <= lvl.maxTurns, `PO: höchstens ${lvl.maxTurns} Richtungswechsel`, `${turns} Richtungswechsel`);
-    add(decisions <= lvl.maxDecisions, `PO: höchstens ${lvl.maxDecisions} Entscheidungsstellen`, `${decisions} Entscheidungsstelle${decisions === 1 ? '' : 'n'}`);
+    // Die PO nennt nur Mindestwerte; die Obergrenzen sind Vorgabe des Vereins (nicht mehr Abzweige als nötig)
+    add(turns <= lvl.maxTurns, `Vereinsvorgabe: höchstens ${lvl.maxTurns} Richtungswechsel`, `${turns} Richtungswechsel`);
+    add(decisions <= lvl.maxDecisions, `Vereinsvorgabe: höchstens ${lvl.maxDecisions} Entscheidungsstellen`, `${decisions} Entscheidungsstelle${decisions === 1 ? '' : 'n'}`);
     // Zielvorgabe (weich): wird sie verfehlt, bleibt der Trail PO-konform, ist aber schwerer als gewollt
     const tc = targetCaps(lvl, mode);
     const target = mode === 'pruefung'
