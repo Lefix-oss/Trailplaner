@@ -103,7 +103,7 @@ button.small { font-size: 13px; padding: 7px 10px; }
 .places { list-style: none; margin: 8px 0 0; padding: 0; display: grid; gap: 4px; }
 .places button { width: 100%; text-align: left; font-weight: 500; font-size: 14px; line-height: 1.3; }
 .places-list { display: grid; gap: 6px; margin: 8px 0; }
-.place { display: grid; grid-template-columns: 28px 1fr auto auto; gap: 8px; align-items: center; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; font-size: 14px; }
+.place { display: grid; grid-template-columns: 28px 1fr auto auto auto; gap: 6px; align-items: center; padding: 6px 8px; border: 1px solid var(--line); border-radius: 6px; cursor: pointer; font-size: 14px; }
 .place.active { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
 .place-badge { display: inline-grid; place-items: center; width: 24px; height: 24px; border-radius: 4px; color: #fff; font-weight: 700; }
 .place-name { min-width: 0; overflow-wrap: anywhere; }
@@ -256,7 +256,7 @@ details.steps-box ol.steps { padding: 6px 0 0; }
       <ul id="placeList" class="places"></ul>
       <div id="places" class="places-list"></div>
       <button id="addPlace" class="small" type="button">+ weiteren Ort</button>
-      <p class="hint">Oder einen Punkt auf der Karte antippen. Suche und Kartenklick gelten für den markierten Ort, geplant wird im Kreis. Rechts je Ort das Gelände: nur im Ort, mit Ortsrand oder auch Feld und Wald.</p>
+      <p class="hint">Oder einen Punkt auf der Karte antippen. Suche und Kartenklick gelten für den markierten Ort, geplant wird im Kreis. Rechts je Ort das Gelände (nur im Ort, mit Ortsrand oder auch Feld und Wald) und das Suchgebiet (Radius).</p>
     </section>
 
     <section>
@@ -278,9 +278,7 @@ details.steps-box ol.steps { padding: 6px 0 0; }
       <p id="modeHint" class="hint"></p>
       <div class="grid2">
         <div><label class="lbl" for="startTime">Erste Suche um</label><input id="startTime" type="time" value="10:00"></div>
-        <div><label class="lbl" for="radius">Suchgebiet</label>
-          <select id="radius"><option value="400">400 m Radius</option><option value="600">600 m Radius</option><option value="800">800 m Radius</option><option value="1200" selected>1,2 km Radius</option><option value="1600">1,6 km Radius</option><option value="2200">2,2 km Radius</option></select></div>
-        <label class="check" for="allowPaths"><input id="allowPaths" type="checkbox" checked> Fuß- und Feldwege erlauben (auf der Straßenkarte oft nicht zu sehen)</label>
+                <label class="check" for="allowPaths"><input id="allowPaths" type="checkbox" checked> Fuß- und Feldwege erlauben (auf der Straßenkarte oft nicht zu sehen)</label>
         <label class="check" for="avoidLoops"><input id="avoidLoops" type="checkbox" checked> Trails vermeiden, die auf sich zurücklaufen</label>
         <div><label class="lbl" for="minDist">Abstand zwischen Trails</label>
           <select id="minDist"><option value="20">mind. 20 m</option><option value="30" selected>mind. 30 m</option><option value="50">mind. 50 m</option><option value="80">mind. 80 m</option></select></div>
@@ -1242,6 +1240,9 @@ const Pruefung = (() => {
     } else if (!Array.isArray(ex.places) || !ex.places.length || !ex.places.every(p => p && PLACE_IDS.includes(p.id) && okCenter(p.center))) {
       throw new Error('Die Datei ist beschädigt: Ortsmitte fehlt.');
     }
+    // Radius je Ort (ältere Stände: ein Radius für alle in den Einstellungen)
+    const defRadius = (ex.settings && +ex.settings.radius) || 1200;
+    ex.places.forEach(p => { if (!(+p.radius > 0)) p.radius = defRadius; });
     const ids = ex.places.map(p => p.id);
     ex.trails.forEach((t, i) => {
       if (t && !ids.includes(t.place)) throw new Error(`Die Datei ist beschädigt: Trail ${i + 1} ist beschädigt.`);
@@ -1281,10 +1282,13 @@ function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' },
 // Orte A, B, … mit eigenem Gelände; alter Speicherstand (ein Ort) wird zu Ort A
 const PLACE_COLORS = { A: '#e8590c', B: '#1c7ed6', C: '#2f9e44', D: '#7048e8' };
 const TERRAIN_LABELS = { ort: 'Nur im Ort', mix: 'Ort und Ortsrand', frei: 'Auch Feld und Wald' };
-const blankPlace = id => ({ id, name: '', center: null, terrain: 'ort' });
+const RADII = [400, 600, 800, 1200, 1600, 2200];
+const radiusLabel = r => (r < 1000 ? `${r} m` : `${String(r / 1000).replace('.', ',')} km`);
+const blankPlace = id => ({ id, name: '', center: null, terrain: 'ort', radius: 1200 });
 function initialPlaces() {
-  if (Array.isArray(saved.places) && saved.places.length) return saved.places;
-  return [{ id: 'A', name: saved.placeName || '', center: saved.center || null, terrain: saved.terrain || 'ort' }];
+  const r = +saved.radius || 1200;   // früher ein Radius für alle Orte
+  if (Array.isArray(saved.places) && saved.places.length) return saved.places.map(p => ({ ...p, radius: +p.radius || r }));
+  return [{ id: 'A', name: saved.placeName || '', center: saved.center || null, terrain: saved.terrain || 'ort', radius: r }];
 }
 const EMPTY_RESULTS = $('#results').innerHTML;   // „So geht's“-Hinweis für den Neuanfang
 const state = {
@@ -1294,7 +1298,6 @@ const state = {
   exam: null, examPools: null, examSeen: [],   // Prüfungsstand: eingefrorene Trails, Häkchen, Zuteilung
 };
 if (saved.startTime) $('#startTime').value = saved.startTime;
-if (saved.radius) $('#radius').value = saved.radius;
 if (saved.minDist) $('#minDist').value = saved.minDist;
 if (!state.places.some(p => p.id === state.activePlace)) state.activePlace = state.places[0].id;
 state.teams.forEach(t => { if (!state.places.some(p => p.id === t.place)) t.place = state.places[0].id; });
@@ -1317,7 +1320,7 @@ document.querySelectorAll('[data-mode]').forEach(b => b.addEventListener('click'
   if (planMode === 'pruefung' && state.exam) applyExam(state.exam, true); else renderResults();
 }));
 renderMode();
-const persist = () => store.set({ basemap: typeof baseName === 'undefined' ? saved.basemap : baseName, places: state.places, activePlace: state.activePlace, teams: state.teams, startTime: $('#startTime').value, radius: $('#radius').value, minDist: $('#minDist').value, footpaths: $('#allowPaths').checked, avoidLoops: $('#avoidLoops').checked, mode: typeof planMode === 'undefined' ? saved.mode : planMode });
+const persist = () => store.set({ basemap: typeof baseName === 'undefined' ? saved.basemap : baseName, places: state.places, activePlace: state.activePlace, teams: state.teams, startTime: $('#startTime').value, minDist: $('#minDist').value, footpaths: $('#allowPaths').checked, avoidLoops: $('#avoidLoops').checked, mode: typeof planMode === 'undefined' ? saved.mode : planMode });
 
 // ---------- Karte ----------
 const startCenter = activePlace().center;
@@ -1368,7 +1371,7 @@ function drawArea() {
   for (const p of state.places) {
     if (!p.center) continue;
     const act = p.id === state.activePlace, col = PLACE_COLORS[p.id];
-    L.circle([p.center.lat, p.center.lon], { radius: +$('#radius').value, color: col, weight: act ? 3 : 2, dashArray: '6 6', fill: true, fillOpacity: act ? 0.06 : 0.02, interactive: false }).addTo(areaLayer);
+    L.circle([p.center.lat, p.center.lon], { radius: p.radius, color: col, weight: act ? 3 : 2, dashArray: '6 6', fill: true, fillOpacity: act ? 0.06 : 0.02, interactive: false }).addTo(areaLayer);
     if (state.places.length > 1) L.marker([p.center.lat, p.center.lon], { icon: L.divIcon({ className: '', html: `<div class="lf-mark lf-lbl" style="background:${col}">${p.id}</div>`, iconSize: [26, 24], iconAnchor: [13, 12] }), interactive: false, keyboard: false }).addTo(areaLayer);
   }
 }
@@ -1401,6 +1404,10 @@ function renderPlaces() {
     for (const [v, l] of Object.entries(TERRAIN_LABELS)) { const o = document.createElement('option'); o.value = v; o.textContent = l; sel.append(o); }
     sel.value = p.terrain || 'ort';
     sel.onchange = () => { p.terrain = sel.value; invalidate(); persist(); };
+    const rs = document.createElement('select'); rs.setAttribute('aria-label', `Suchgebiet Ort ${p.id}`); rs.title = 'Suchgebiet: Radius um die Ortsmitte';
+    for (const r of RADII) { const o = document.createElement('option'); o.value = r; o.textContent = radiusLabel(r); rs.append(o); }
+    rs.value = p.radius;
+    rs.onchange = () => { p.radius = +rs.value; invalidate(); drawArea(); persist(); };
     const x = document.createElement('button'); x.type = 'button'; x.className = 'x'; x.textContent = '✕'; x.disabled = !many; x.setAttribute('aria-label', `Ort ${p.id} entfernen`);
     x.onclick = () => removePlace(p.id);
     row.onclick = e => {
@@ -1408,7 +1415,7 @@ function renderPlaces() {
       state.activePlace = p.id; renderPlaces(); drawArea(); persist();
       if (p.center) map.flyTo([p.center.lat, p.center.lon], 15, { duration: 0.6 });
     };
-    row.append(badge, name, sel, x);
+    row.append(badge, name, sel, rs, x);
     if (planMode === 'pruefung' && state.exam && many && (state.exam.trails.some(t => t.place === p.id) || state.teams.some(t => t.place === p.id))) {
       const rp = document.createElement('button'); rp.type = 'button'; rp.className = 'small replan';
       rp.textContent = `Nur Ort ${p.id} neu planen`; rp.onclick = () => replanPlace(p.id);
@@ -1435,7 +1442,6 @@ function removePlace(id) {
 }
 $('#addPlace').addEventListener('click', addPlace);
 renderPlaces();
-$('#radius').addEventListener('change', () => { invalidate(); drawArea(); persist(); });
 for (const id of ['#minDist', '#allowPaths', '#avoidLoops']) $(id).addEventListener('change', () => { invalidate(); persist(); });
 $('#startTime').addEventListener('change', () => { persist(); renderResults(); });
 
@@ -1591,7 +1597,7 @@ async function graphFor(place, radius) {
 // Plant die Teams der genannten Orte, Ort für Ort. Bereits geplante Trails (auch anderer Orte und fixedLLs)
 // sind Hindernisse, weil sich die Suchkreise benachbarter Orte überlappen können.
 async function planPlaces(placeIds, mode, fixedLLs = []) {
-  const radius = +$('#radius').value, minDist = +$('#minDist').value, many = state.places.length > 1;
+  const minDist = +$('#minDist').value, many = state.places.length > 1;
   state.seed = (state.seed * 7919 + 13) % 1000003;
   const R = Planner.rng(state.seed);
   const placed = fixedLLs.slice(), byTeam = new Map(), pools = {};
@@ -1602,7 +1608,7 @@ async function planPlaces(placeIds, mode, fixedLLs = []) {
     if (!place || !idx.length) continue;
     if (!place.center) return { ok: false, msg: many ? `Für Ort ${pid} ist noch keine Ortschaft gewählt: Ort ${pid} in der Liste antippen und suchen oder auf der Karte tippen.` : 'Bitte zuerst eine Ortschaft wählen oder auf der Karte tippen.' };
     let G;
-    try { G = await graphFor(place, radius); }
+    try { G = await graphFor(place, place.radius); }
     catch { return { ok: false, msg: 'OpenStreetMap ist gerade nicht erreichbar oder überlastet. Bitte in einer Minute noch einmal versuchen.' }; }
     if (!G.settlementAreas) noAreas = true;
     Planner.setTerrain(G, place.terrain, $('#allowPaths').checked, $('#avoidLoops').checked);
@@ -1764,14 +1770,14 @@ function snapshot(c) {
   };
 }
 function examSettings() {
-  return { radius: +$('#radius').value, minDist: +$('#minDist').value,
+  return { minDist: +$('#minDist').value,
     allowPaths: $('#allowPaths').checked, avoidLoops: $('#avoidLoops').checked, startTime: $('#startTime').value };
 }
 function startExam() {
   const trails = state.plans[state.active].map(snapshot);
   state.exam = {
     format: Pruefung.FORMAT, version: Pruefung.VERSION, savedAt: null,
-    places: state.places.filter(p => trails.some(t => t.place === p.id)).map(p => ({ id: p.id, name: p.name, center: p.center, terrain: p.terrain })),
+    places: state.places.filter(p => trails.some(t => t.place === p.id)).map(p => ({ id: p.id, name: p.name, center: p.center, terrain: p.terrain, radius: p.radius })),
     settings: examSettings(), date: new Date().toLocaleDateString('sv'), trails,
     names: { teams: { 'MT-I': [], 'MT-II': [], 'MT-III': [] }, vps: [] }, assign: trails.map(() => ({ team: '', vp: '' })),
   };
@@ -1801,13 +1807,12 @@ function applyExam(ex, fit, fromFile = false) {
   invalidate();
   state.exam = ex; state.examSeen = ex.trails.map(() => new Set()); state.examPools = null;
   // Orte der Prüfung in die Ortsliste übernehmen; Teams behalten ihren Ort, sofern es ihn gibt
-  const frozen = ex.places.map(p => ({ id: p.id, name: p.name || '', center: p.center, terrain: p.terrain || 'ort' }));
+  const frozen = ex.places.map(p => ({ id: p.id, name: p.name || '', center: p.center, terrain: p.terrain || 'ort', radius: p.radius || 1200 }));
   state.places = fromFile ? frozen : Pruefung.mergePlaces(state.places, frozen);
   if (fromFile || !state.places.some(p => p.id === state.activePlace)) state.activePlace = state.places[0].id;
   state.teams.forEach(t => { if (!state.places.some(p => p.id === t.place)) t.place = state.places[0].id; });
   renderPlaces(); renderTeams();
   const s = ex.settings || {};
-  if (s.radius) $('#radius').value = s.radius;
   if (s.minDist) $('#minDist').value = s.minDist;
   if (s.startTime) $('#startTime').value = s.startTime;
   if ('allowPaths' in s) $('#allowPaths').checked = !!s.allowPaths;
@@ -1837,7 +1842,7 @@ function resetAll() {
   Object.assign(state, { places: [blankPlace('A')], activePlace: 'A', teams: defaultTeams(), pools: null, plans: [], active: 0, planTeams: null, exam: null, examPools: null, examSeen: [] });
   try { localStorage.removeItem(EXAM_KEY); } catch {}
   $('#placeInput').value = ''; $('#placeList').innerHTML = ''; renderPlaces();
-  $('#startTime').value = '10:00'; $('#radius').value = '1200'; $('#minDist').value = '30';
+  $('#startTime').value = '10:00'; $('#minDist').value = '30';
   $('#allowPaths').checked = true; $('#avoidLoops').checked = true;
   trailLayer.clearLayers(); drawArea(); map.setView(CLUB.home, 13);
   $('#results').innerHTML = EMPTY_RESULTS;
@@ -1882,7 +1887,7 @@ async function replaceTrail(i, btn) {
   try {
     const place = Pruefung.placeOf(ex, old);
     let G;
-    try { G = await graphFor(place, s.radius); }
+    try { G = await graphFor(place, place.radius || s.radius || 1200); }
     catch { setStatus(`OpenStreetMap ist gerade nicht erreichbar. Trail ${i + 1} bleibt unverändert.`, true); return; }
     const lv = old.level, pk = place.id + '|' + lv;
     Planner.setTerrain(G, place.terrain || 'ort', s.allowPaths, s.avoidLoops);
@@ -1922,7 +1927,7 @@ async function replanPlace(pid) {
     if (!state.teams.some(t => t.place === pid)) { setStatus(`Ort ${pid} hat keine Teams: bei den Teams Ort ${pid} auswählen. Der bisherige Stand bleibt.`, true); return; }
     const r = await planPlaces([pid], 'pruefung', ex.trails.filter(t => t.place !== pid).map(t => t.ll));
     if (!r.ok) { setStatus(`${r.msg} Der bisherige Stand bleibt.`, true); return; }
-    const snap = { id: place.id, name: place.name, center: place.center, terrain: place.terrain };
+    const snap = { id: place.id, name: place.name, center: place.center, terrain: place.terrain, radius: place.radius };
     state.exam = Pruefung.replacePlaceTrails(ex, pid, r.plan.map(snapshot), snap);
     state.examSeen = state.exam.trails.map(() => new Set());
     for (const k of Object.keys(state.examPools || {})) if (k.startsWith(pid + '|')) delete state.examPools[k];

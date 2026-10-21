@@ -53,7 +53,7 @@ test('obstacle + Planner.compatible erkennt zu nahe Trails', () => {
 
 test('serializeExam/parseExam: Hin und zurück ohne Verlust', () => {
   const exam = { format: 'trailplaner-pruefung', version: 2, savedAt: '2026-10-22T10:00:00Z',
-    places: [{ id: 'A', name: 'Musterdorf', center: { lat: 49.65, lon: 9.95 }, terrain: 'ort' }], settings: { radius: 1200, minDist: 30, allowPaths: false, avoidLoops: true, startTime: '10:00' },
+    places: [{ id: 'A', name: 'Musterdorf', center: { lat: 49.65, lon: 9.95 }, terrain: 'ort', radius: 1200 }], settings: { radius: 1200, minDist: 30, allowPaths: false, avoidLoops: true, startTime: '10:00' },
     date: '2026-10-31', trails: [{ level: 'MT-I', ll: [[49.65, 9.95], [49.651, 9.951]], length: 305, turns: 1, decisions: 1, crossings: 0,
       steps: [{ at: 0, kind: 'start', text: 'Start' }], startStreet: 'Industriestraße', endStreet: 'Bavariastraße', checked: true, harder: 'Mehr Abzweige als vorgesehen', place: 'A' }],
     names: { teams: { 'MT-I': ['Anna mit Luna'], 'MT-II': [], 'MT-III': [] }, vps: ['VP1'] }, assign: [{ team: 'Anna mit Luna', vp: 'VP1' }] };
@@ -123,7 +123,7 @@ test('parseExam migriert Version 1 auf einen Ort A', () => {
   const ex = Pruefung.parseExam(JSON.stringify({ format: 'trailplaner-pruefung', version: 1, placeName: 'Musterdorf', center: { lat: 49.1, lon: 9.1 },
     settings: { radius: 1200, minDist: 30, terrain: 'mix', allowPaths: true, avoidLoops: true, startTime: '10:00' }, trails: [{ level: 'MT-I', ll: [[1, 2], [1, 3]] }] }));
   assert.equal(ex.version, 2);
-  assert.deepEqual(ex.places, [{ id: 'A', name: 'Musterdorf', center: { lat: 49.1, lon: 9.1 }, terrain: 'mix' }]);
+  assert.deepEqual(ex.places, [{ id: 'A', name: 'Musterdorf', center: { lat: 49.1, lon: 9.1 }, terrain: 'mix', radius: 1200 }]);
   assert.equal(ex.trails[0].place, 'A');
   assert.equal('terrain' in ex.settings, false);
   assert.equal('placeName' in ex, false);
@@ -167,6 +167,14 @@ test('mergePlaces behält die aktuelle Ortsliste und ergänzt nur fehlende Orte 
   const live = [{ id: 'A', name: 'Musterdorf', center: { lat: 1, lon: 1 }, terrain: 'ort' }, { id: 'C', name: 'Neudorf', center: { lat: 3, lon: 3 }, terrain: 'mix' }];
   const frozen = [{ id: 'A', name: 'Alt', center: { lat: 9, lon: 9 }, terrain: 'frei' }, { id: 'B', name: 'Beispielhausen', center: { lat: 2, lon: 2 }, terrain: 'ort' }];
   assert.deepEqual(Pruefung.mergePlaces(live, frozen).map(p => p.id + ':' + p.name), ['A:Musterdorf', 'C:Neudorf', 'B:Beispielhausen']);
+});
+
+test('parseExam ergänzt den Radius je Ort aus den Einstellungen', () => {
+  const v1 = Pruefung.parseExam(JSON.stringify({ format: 'trailplaner-pruefung', version: 1, center: { lat: 49.1, lon: 9.1 }, settings: { radius: 800 }, trails: [{ level: 'MT-I', ll: [[1, 2], [1, 3]] }] }));
+  assert.equal(v1.places[0].radius, 800);
+  const ex = v2(); ex.places[1].radius = 600;
+  const r = Pruefung.parseExam(JSON.stringify(ex));
+  assert.deepEqual(r.places.map(p => p.radius), [1200, 600]);
 });
 
 test('placeOf liefert den Ort eines Trails', () => {
