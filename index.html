@@ -1178,6 +1178,8 @@ const Pruefung = (() => {
 
   // Text zum Versenden (z. B. per WhatsApp an Trailleger und Versteckpersonen); link() macht aus [lat, lon] einen Kartenlink
   const shortName = p => String((p && p.name) || '').split(',')[0].trim();
+  // Aktuelle Ortsliste bleibt; nur Orte der Prüfung, die dort fehlen, kommen dazu (nach Kennbuchstabe)
+  function mergePlaces(live, frozen) { return live.concat(frozen.filter(f => !live.some(p => p.id === f.id))); }
   function placeOf(exam, trail) { return exam.places.find(p => p.id === trail.place) || exam.places[0]; }
 
   // Bei mehreren Orten nach Ort gegliedert, in der Reihenfolge der Ortsliste
@@ -1258,7 +1260,7 @@ const Pruefung = (() => {
     return ex;
   }
 
-  return { FORMAT, VERSION, LEVEL_KEYS, PLACE_IDS, parseNames, splitTeam, draw, setCell, obstacle, shareText, placeOf, replacePlaceTrails, osmKey, osmFresh, serializeExam, parseExam };
+  return { FORMAT, VERSION, LEVEL_KEYS, PLACE_IDS, parseNames, splitTeam, draw, setCell, obstacle, shareText, placeOf, mergePlaces, replacePlaceTrails, osmKey, osmFresh, serializeExam, parseExam };
 })();
 if (typeof module !== 'undefined') module.exports = Pruefung;
 </script>
@@ -1407,7 +1409,7 @@ function renderPlaces() {
       if (p.center) map.flyTo([p.center.lat, p.center.lon], 15, { duration: 0.6 });
     };
     row.append(badge, name, sel, x);
-    if (planMode === 'pruefung' && state.exam && (state.exam.trails.some(t => t.place === p.id) || state.teams.some(t => t.place === p.id))) {
+    if (planMode === 'pruefung' && state.exam && many && (state.exam.trails.some(t => t.place === p.id) || state.teams.some(t => t.place === p.id))) {
       const rp = document.createElement('button'); rp.type = 'button'; rp.className = 'small replan';
       rp.textContent = `Nur Ort ${p.id} neu planen`; rp.onclick = () => replanPlace(p.id);
       row.append(rp);
@@ -1794,12 +1796,14 @@ function saveExamFile() {
   download(`Trailplan_${place}_${ex.date}.json`, Pruefung.serializeExam(ex), 'application/json');
   setStatus('Prüfungsstand gespeichert. Die Datei liegt im Download-Ordner.');
 }
-function applyExam(ex, fit) {
+// fromFile: eine geöffnete Datei bringt ihre Orte mit; beim Wiederherstellen und Moduswechsel bleibt die Ortsliste
+function applyExam(ex, fit, fromFile = false) {
   invalidate();
   state.exam = ex; state.examSeen = ex.trails.map(() => new Set()); state.examPools = null;
   // Orte der Prüfung in die Ortsliste übernehmen; Teams behalten ihren Ort, sofern es ihn gibt
-  state.places = ex.places.map(p => ({ id: p.id, name: p.name || '', center: p.center, terrain: p.terrain || 'ort' }));
-  state.activePlace = state.places[0].id;
+  const frozen = ex.places.map(p => ({ id: p.id, name: p.name || '', center: p.center, terrain: p.terrain || 'ort' }));
+  state.places = fromFile ? frozen : Pruefung.mergePlaces(state.places, frozen);
+  if (fromFile || !state.places.some(p => p.id === state.activePlace)) state.activePlace = state.places[0].id;
   state.teams.forEach(t => { if (!state.places.some(p => p.id === t.place)) t.place = state.places[0].id; });
   renderPlaces(); renderTeams();
   const s = ex.settings || {};
@@ -1818,7 +1822,7 @@ async function openExamFile(file) {
   catch (e) { setStatus(e.message, true); return; }
   if (state.exam && !confirm('Der aktuelle Prüfungsstand wird durch die Datei ersetzt. Fortfahren?')) return;
   const prev = state.exam;
-  try { applyExam(ex, true); }
+  try { applyExam(ex, true, true); }
   catch (e) {
     console.error(e);
     if (prev) applyExam(prev, true); else { state.exam = null; try { localStorage.removeItem(EXAM_KEY); } catch {} renderResults(); }
@@ -2141,7 +2145,7 @@ function renderResults() {
       <details class="checks"><summary style="color:var(${allOk ? '--ok' : hardOk ? '--warn' : '--bad'})">${allOk ? '✓' : hardOk ? '⚠' : '✕'} Regelprüfung: ${v.checks.filter(x => x.ok).length} von ${v.checks.length} Punkten erfüllt</summary><ul></ul></details>
       <details class="checks steps-box"><summary>Trailverlauf: ${steps.length} Schritte</summary><ol class="steps"></ol></details>
       <div class="actions"></div>`;
-    card.querySelector('.name').textContent = `Trail ${i + 1} · ${t.name}`;
+    card.querySelector('.name').textContent = `Trail ${i + 1} · ${t.name}${placeSuffix(c.place)}`;
     const ul = card.querySelector('details ul');
     v.checks.forEach(ch => {
       const li = document.createElement('li');

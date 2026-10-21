@@ -163,6 +163,12 @@ test('replacePlaceTrails hängt zusätzliche Trails an und ergänzt neuen Ort', 
   assert.deepEqual(r.assign.slice(3), [{ team: '', vp: '' }, { team: '', vp: '' }]);
 });
 
+test('mergePlaces behält die aktuelle Ortsliste und ergänzt nur fehlende Orte der Prüfung', () => {
+  const live = [{ id: 'A', name: 'Musterdorf', center: { lat: 1, lon: 1 }, terrain: 'ort' }, { id: 'C', name: 'Neudorf', center: { lat: 3, lon: 3 }, terrain: 'mix' }];
+  const frozen = [{ id: 'A', name: 'Alt', center: { lat: 9, lon: 9 }, terrain: 'frei' }, { id: 'B', name: 'Beispielhausen', center: { lat: 2, lon: 2 }, terrain: 'ort' }];
+  assert.deepEqual(Pruefung.mergePlaces(live, frozen).map(p => p.id + ':' + p.name), ['A:Musterdorf', 'C:Neudorf', 'B:Beispielhausen']);
+});
+
 test('placeOf liefert den Ort eines Trails', () => {
   const ex = v2();
   assert.equal(Pruefung.placeOf(ex, ex.trails[1]).name, 'Beispielhausen');
