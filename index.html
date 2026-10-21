@@ -1278,11 +1278,13 @@ async function loadOSM(c, radius) {
   const q = `[out:json][timeout:60];(way["highway"](${bbox});way["landuse"~"^(residential|retail|commercial)$"](${bbox});relation["landuse"~"^(residential|retail|commercial)$"](${bbox});node["barrier"](${bbox}););out body geom;`;
   let lastErr;
   for (const url of OVERPASS) {
+    // Ein hängender Server darf die Suche nicht endlos blockieren: nach 40 s zum nächsten
+    const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 40000);
     try {
-      const r = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' } });
+      const r = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal: ctl.signal });
       if (!r.ok) throw new Error('HTTP ' + r.status);
       return await r.json();
-    } catch (e) { lastErr = e; }
+    } catch (e) { lastErr = e; } finally { clearTimeout(timer); }
   }
   throw lastErr;
 }
@@ -1525,6 +1527,48 @@ function drawExam(fit = false) {
   });
   if (fit && bounds.length) map.fitBounds(bounds, { padding: [30, 30] });
 }
+// Einen Trail neu würfeln; die übrigen bleiben exakt wie gespeichert und dienen nur als Hindernisse
+async function replaceTrail(i, btn) {
+  const ex = state.exam, s = ex.settings, old = ex.trails[i];
+  if (!confirm(`Trail ${i + 1} ersetzen? Das Häkchen geht verloren, der neue Trail muss abgefahren werden.`)) return;
+  btn.disabled = true; btn.textContent = 'Suche Ersatz …';
+  try {
+    const key = `${ex.center.lat.toFixed(5)},${ex.center.lon.toFixed(5)},${s.radius}`;
+    if (!state.graph || state.graphKey !== key) {
+      setStatus('Lade Wege aus OpenStreetMap …');
+      let osm;
+      try { osm = await loadOSM(ex.center, s.radius); }
+      catch { setStatus(`OpenStreetMap ist gerade nicht erreichbar. Trail ${i + 1} bleibt unverändert.`, true); return; }
+      setStatus('Baue Wegenetz …'); await tick();
+      state.graph = Planner.buildGraph(osm, ex.center, s.radius);
+      state.graphKey = key; state.pools = null; state.examPools = null;
+    }
+    const G = state.graph, lv = old.level;
+    Planner.setTerrain(G, s.terrain, s.allowPaths, s.avoidLoops);
+    state.examPools = state.examPools || {};
+    if (!state.examPools[lv]) {
+      setStatus(`Würfle ${lv}-Trails und prüfe sie gegen die PO …`); await tick();
+      state.examPools[lv] = Planner.pool(G, lv, Planner.rng(Date.now() % 1000003), { want: 45, maxTries: 10000, mode: 'pruefung' });
+    }
+    const obstacles = ex.trails.filter((_, k) => k !== i).map(t => Pruefung.obstacle(t, G.fromLatLon));
+    const oldStart = G.fromLatLon(old.ll[0]);
+    const isOld = c => Math.abs(c.v.length - old.length) < 5 && Math.hypot(c.v.pts[0][0] - oldStart[0], c.v.pts[0][1] - oldStart[1]) < 5;
+    const fits = state.examPools[lv].list.filter(c => !isOld(c) && obstacles.every(o => Planner.compatible(c, o, s.minDist)));
+    if (!fits.length) { setStatus(`Für Trail ${i + 1} habe ich keinen Ersatz gefunden, der zu den anderen Trails passt. Trail ${i + 1} bleibt unverändert.`, true); return; }
+    const seen = state.examSeen[i] || (state.examSeen[i] = new Set());
+    let next = fits.find(c => !seen.has(c.id));
+    if (!next) { seen.clear(); next = fits[0]; }
+    seen.add(next.id);
+    ex.trails[i] = snapshot(next);
+    persistExam(); renderExam();
+    setStatus(`Trail ${i + 1} ersetzt (${ex.trails[i].length} m). Bitte abfahren und danach abhaken.`);
+  } catch (e) {
+    console.error(e);
+    setStatus(`Interner Fehler beim Ersetzen: ${e && e.message ? e.message : e}. Trail ${i + 1} bleibt unverändert.`, true);
+  } finally {
+    if (btn.isConnected) { btn.disabled = false; btn.textContent = 'Ersetzen'; }
+  }
+}
 function renderExam() {
   const ex = state.exam, host = $('#results');
   host.innerHTML = '';
@@ -1556,7 +1600,7 @@ function renderExam() {
       ol.append(li);
     });
     card.querySelector('.exam-check input').onchange = e => { t.checked = e.target.checked; persistExam(); renderExam(); };
-    const bRep = mk('Ersetzen', () => {}); bRep.disabled = true;
+    const bRep = mk('Ersetzen', () => replaceTrail(i, bRep));
     card.querySelector('.actions').append(bRep, linkBtn('Startpunkt', pointLink(t.ll[0])), linkBtn('Endpunkt', pointLink(t.ll[t.ll.length - 1])));
     cards.append(card);
   });
