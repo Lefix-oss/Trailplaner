@@ -157,6 +157,7 @@ ol.steps li.end .t { font-weight: 600; }
 .streets { padding: 6px 14px 0; font-size: 14px; color: var(--muted); }
 .exam-check { padding: 10px 14px 0; font-weight: 600; }
 .exam-bar { margin-top: 10px; flex-wrap: wrap; gap: 6px; }
+.reset-btn { margin-top: 8px; }
 .assign { display: grid; gap: 12px; margin-top: 22px; }
 .assign textarea { min-height: 110px; resize: vertical; font-size: 14px; line-height: 1.4; }
 .assign .warnbox { margin: 0; }
@@ -272,7 +273,7 @@ details.steps-box ol.steps { padding: 6px 0 0; }
           <select id="radius"><option value="800">800 m Radius</option><option value="1200" selected>1,2 km Radius</option><option value="1600">1,6 km Radius</option><option value="2200">2,2 km Radius</option></select></div>
         <div><label class="lbl" for="terrain">Gelände</label>
           <select id="terrain"><option value="ort" selected>Nur im Ort</option><option value="mix">Ort und Ortsrand</option><option value="frei">Auch Feld und Wald</option></select></div>
-        <label class="check" for="allowPaths"><input id="allowPaths" type="checkbox"> Fuß- und Feldwege ohne Namen erlauben</label>
+        <label class="check" for="allowPaths"><input id="allowPaths" type="checkbox"> Fuß- und Feldwege erlauben (abseits der Straßen, vorher prüfen)</label>
         <label class="check" for="avoidLoops"><input id="avoidLoops" type="checkbox" checked> Trails vermeiden, die auf sich zurücklaufen</label>
         <div><label class="lbl" for="minDist">Abstand zwischen Trails</label>
           <select id="minDist"><option value="20">mind. 20 m</option><option value="30" selected>mind. 30 m</option><option value="50">mind. 50 m</option><option value="80">mind. 80 m</option></select></div>
@@ -281,6 +282,7 @@ details.steps-box ol.steps { padding: 6px 0 0; }
 
     <section>
       <button id="planBtn" class="primary" type="button">Trails planen</button>
+      <button id="resetBtn" class="small reset-btn" type="button">Eingaben löschen und neu anfangen</button>
       <div id="examBar" class="row exam-bar" hidden>
         <button id="examSave" class="small" type="button">Stand speichern …</button>
         <button id="examOpen" class="small" type="button">Gespeicherten Stand öffnen …</button>
@@ -349,6 +351,8 @@ const Planner = (() => {
     secondary: 'Staatsstraße', secondary_link: 'Staatsstraße', primary: 'Bundesstraße', primary_link: 'Bundesstraße',
   };
   const CLASS_RANK = { quiet: 0, medium: 1, busy: 2 };
+  // Eigenständige Fuß-, Feld-, Rad- und Reitwege: nur auf Wunsch (Karten zeigen sie oft nicht, vor Ort fehlen sie manchmal)
+  const FOOTPATHS = new Set(['footway', 'path', 'track', 'cycleway', 'bridleway']);
   const SETTLEMENT = new Set(['residential', 'retail', 'commercial']);
   const TERRAIN = { ort: 0.85, mix: 0.5, frei: 0 };   // Mindestanteil im Ort
   const EDGE_TOL = 20;            // Straße am Rand des Wohngebiets zählt noch als im Ort
@@ -506,7 +510,7 @@ const Planner = (() => {
       if (!cls) continue;
       const wi = ways.length;
       ways.push({ id: el.id, name: t.name || '', ref: t.ref || '', hw: t.highway, cls,
-        unnamedPath: ['footway', 'path', 'track', 'cycleway', 'bridleway', 'pedestrian'].includes(t.highway) && !t.name });
+        footpath: FOOTPATHS.has(t.highway) });
       for (let i = 0; i < el.nodes.length; i++) pos.set(el.nodes[i], pts[i]);
       for (let i = 0; i + 1 < el.nodes.length; i++) {
         const a = el.nodes[i], b = el.nodes[i + 1];
@@ -556,9 +560,9 @@ const Planner = (() => {
           inside = l / len;
         }
         const id = segs.length;
-        const unnamedPath = sub.some(wi => ways[wi].unnamedPath);
+        const footpath = sub.some(wi => ways[wi].footpath);
         const blocked = nodes.some(nd => blockedNodes.has(nd));
-        segs.push({ id, a: n, b: cur, nodes, pts, cum, len, sub, cls: worst, clsLen, inside, unnamedPath, blocked });
+        segs.push({ id, a: n, b: cur, nodes, pts, cum, len, sub, cls: worst, clsLen, inside, footpath, blocked });
         addAt(n, id); if (cur !== n) addAt(cur, id);
       }
     }
@@ -584,9 +588,14 @@ const Planner = (() => {
     }
 
     // Knoten, die an einer Straße mit viel Verkehr liegen (Querung)
-    const busyNodes = new Set();
-    for (const [n, nb] of adj) for (const wi of nb.values()) if (ways[wi].cls === 'busy') { busyNodes.add(n); break; }
-    return { segs, segAt, adj, ways, busyNodes, settlementAreas: polys.length, inSettlement, barriers: blockedNodes.size, terrain: 'ort', avoidLoops: true, deg: n => (adj.get(n) ? adj.get(n).size : 0), nearestDrive, toLatLon, fromLatLon: ll => P(ll[0], ll[1]), center, radius };
+    // Verkehrsklasse je Knoten: die verkehrsreichste Straße, die dort anliegt (für Querungen)
+    const nodeCls = new Map();
+    for (const [n, nb] of adj) {
+      let worst = 'quiet';
+      for (const wi of nb.values()) if (CLASS_RANK[ways[wi].cls] > CLASS_RANK[worst]) worst = ways[wi].cls;
+      if (worst !== 'quiet') nodeCls.set(n, worst);
+    }
+    return { segs, segAt, adj, ways, nodeCls, settlementAreas: polys.length, inSettlement, barriers: blockedNodes.size, terrain: 'ort', avoidLoops: true, deg: n => (adj.get(n) ? adj.get(n).size : 0), nearestDrive, toLatLon, fromLatLon: ll => P(ll[0], ll[1]), center, radius };
   }
 
   // ---------- Hilfen für orientierte Segmente ----------
@@ -634,7 +643,6 @@ const Planner = (() => {
     const starts = G._starts[lvl.key];
     if (!starts.length) { fail('keine passenden Wege'); return null; }
     const target = lvl.length;
-    const noBusyCross = !lvl.allowed.includes('busy');
 
     // Startsegment nach Länge gewichtet
     let pick = R() * G._startTotal[lvl.key], s0 = starts[0];
@@ -658,7 +666,7 @@ const Planner = (() => {
       visited.add(v);
       const deg = G.deg(v);
       const vIn = dirAtEnd(curO);
-      if (noBusyCross && G.busyNodes.has(v)) { fail('würde Straße mit viel Verkehr queren'); return null; }
+      if (!crossOk(lvl, G, v)) { fail('würde Straße mit Verkehr queren'); return null; }
       if (deg >= 3) {
         if (acc - lastDecisionAt < MIN_DECISION_GAP) { fail('Entscheidungsstellen zu dicht'); return null; }
         if (decisions >= caps.maxDecisions) { fail('zu viele Entscheidungsstellen'); return null; }
@@ -745,7 +753,10 @@ const Planner = (() => {
       ? { maxTurns: lvl.minTurns, maxDecisions: lvl.minTurns, noStraight: true }
       : { maxTurns: lvl.minTurns + 1, maxDecisions: lvl.minTurns + 1, noStraight: false };
   }
-  const RELAXED = lvl => ({ maxTurns: lvl.minTurns + 3, maxDecisions: lvl.minTurns + 6, noStraight: false });
+  // Zweiter Suchdurchgang: schwerer als die Vorgabe, aber nie über die PO-Grenzen hinaus
+  const RELAXED = lvl => ({ maxTurns: lvl.maxTurns, maxDecisions: lvl.maxDecisions, noStraight: false });
+  // Querung nur von Straßen, die die Stufe auch begehen darf (MT-I: keine Straße mit Verkehr, MT-II: keine Hauptstraße)
+  const crossOk = (lvl, G, node) => lvl.allowed.includes(G.nodeCls.get(node) || 'quiet');
 
   function validate(G, tr, mode = tr.mode || 'training') {
     const lvl = LEVELS[tr.level];
@@ -784,8 +795,7 @@ const Planner = (() => {
     const noCross = !dup && new Set(nodeSeq).size === nodeSeq.length;
     add(noCross, 'Trail kreuzt sich nicht selbst', noCross ? 'kein Weg doppelt' : 'Weg oder Kreuzung doppelt');
 
-    let turns = 0, crossings = 0, decisions = 0, straightDecisions = 0, busyCross = false;
-    const noBusy = !lvl.allowed.includes('busy');
+    let turns = 0, crossings = 0, decisions = 0, straightDecisions = 0, badCross = false;
     for (let i = 1; i < tr.legs.length; i++) {
       const a = oriented(G.segs[tr.legs[i - 1].seg], tr.legs[i - 1].fwd);
       const b = oriented(G.segs[tr.legs[i].seg], tr.legs[i].fwd);
@@ -793,9 +803,11 @@ const Planner = (() => {
       const turn = isTurnAt(G, node, tr.legs[i - 1].seg, dirAtEnd(a), tr.legs[i].seg);
       if (deg >= 3) { decisions++; if (turn) turns++; else straightDecisions++; }
       if (deg >= 4) crossings++;
-      if (noBusy && G.busyNodes.has(node)) busyCross = true;
+      if (!crossOk(lvl, G, node)) badCross = true;
     }
     add(turns >= lvl.minTurns, `PO: mind. ${lvl.minTurns} Richtungswechsel mit Auswahl`, `${turns} Richtungswechsel`);
+    add(turns <= lvl.maxTurns, `PO: höchstens ${lvl.maxTurns} Richtungswechsel`, `${turns} Richtungswechsel`);
+    add(decisions <= lvl.maxDecisions, `PO: höchstens ${lvl.maxDecisions} Entscheidungsstellen`, `${decisions} Entscheidungsstelle${decisions === 1 ? '' : 'n'}`);
     // Zielvorgabe (weich): wird sie verfehlt, bleibt der Trail PO-konform, ist aber schwerer als gewollt
     const tc = targetCaps(lvl, mode);
     const target = mode === 'pruefung'
@@ -803,7 +815,10 @@ const Planner = (() => {
       : { ok: turns <= tc.maxTurns && decisions <= tc.maxDecisions, label: `Vorgabe Training: höchstens ${tc.maxDecisions} Entscheidungsstellen` };
     checks.push({ ok: target.ok, soft: true, label: target.label, detail: `${decisions} Entscheidungsstelle${decisions === 1 ? '' : 'n'}, davon ${turns} Richtungswechsel` });
     const excess = Math.max(0, decisions - tc.maxDecisions) + Math.max(0, turns - tc.maxTurns) + (mode === 'pruefung' ? straightDecisions : 0);
-    if (noBusy) add(!busyCross, 'keine Hauptstraße gequert (laut Karte)', busyCross ? 'quert eine Hauptstraße' : 'keine Querung');
+    if (!lvl.allowed.includes('busy')) {
+      const what = lvl.allowed.includes('medium') ? 'keine Hauptstraße' : 'keine Straße mit Verkehr';
+      add(!badCross, `${what} gequert (laut Karte)`, badCross ? `quert ${lvl.allowed.includes('medium') ? 'eine Hauptstraße' : 'eine Straße mit Verkehr'}` : 'keine Querung');
+    }
     if (lvl.minCrossings) add(crossings >= lvl.minCrossings, `Kreuzungen (mind. ${lvl.minCrossings})`, `${crossings} Kreuzung${crossings === 1 ? '' : 'en'}`);
     if (lvl.minTrafficM) {
       const tm = tr.legs.reduce((s, l) => s + trafficOfLeg(G, l), 0);
@@ -937,16 +952,11 @@ const Planner = (() => {
     const reasons = {};
     const fail = r => { reasons[r] = (reasons[r] || 0) + 1; };
     const out = [];
-    // Durchgang 1: nur Trails, die die Vorgabe genau treffen. Durchgang 2 (falls nötig): PO-konform, aber schwerer
     let exactFound = 0;
-    for (let t = 0; t < maxTries && out.length < want; t++) {
-      const pass2 = t >= maxTries / 2 && exactFound < want / 3;
-      if (t >= maxTries / 2 && !pass2) break;
-      const tr = walk(G, lvl, R, fail, pass2 ? looseCaps : exactCaps);
-      if (!tr) continue;
+    const consider = tr => {
       tr.mode = mode;
       const v = validate(G, tr);
-      if (!v.ok) { for (const c of v.checks) if (!c.ok) fail(c.label); continue; }
+      if (!v.ok) { for (const c of v.checks) if (!c.ok) fail(c.label); return; }
       const segSet = new Set(tr.legs.map(l => l.seg));
       // Dubletten vermeiden
       let similar = false;
@@ -954,7 +964,7 @@ const Planner = (() => {
         let inter = 0; for (const s of segSet) if (c.segSet.has(s)) inter++;
         if (inter / Math.min(segSet.size, c.segSet.size) > 0.6) { similar = true; break; }
       }
-      if (similar) continue;
+      if (similar) return;
       const nodeSet = new Set();
       tr.legs.forEach(l => { const s = G.segs[l.seg]; for (const n of s.nodes) nodeSet.add(n); });
       const smp = samples(v.pts);
@@ -968,9 +978,70 @@ const Planner = (() => {
         id: levelKey + '#' + out.length, tr, v, segSet, nodeSet, samples: smp,
         bbox: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], score,
       });
+    };
+    // Durchgang 1: Zufallssuche, nur Trails, die die Vorgabe genau treffen; Durchgang 2 (falls nötig): PO-konform, aber schwerer
+    for (let t = 0; t < maxTries && out.length < want; t++) {
+      const pass2 = t >= maxTries / 2 && exactFound < want / 3;
+      if (t >= maxTries / 2 && !pass2) break;
+      const tr = walk(G, lvl, R, fail, pass2 ? looseCaps : exactCaps);
+      if (tr) consider(tr);
+    }
+    // Seltene Trails findet der Zufall kaum: dann systematisch alle Abzweig-Kombinationen durchgehen
+    for (const caps of [exactCaps, looseCaps]) {
+      if (out.length >= want || (caps === looseCaps && exactFound >= want / 3)) break;
+      const budget = { steps: opts.searchSteps || 250000 };
+      for (const tr of systematic(G, lvl, caps, R, budget)) { consider(tr); if (out.length >= want) break; }
     }
     out.sort((a, b) => a.v.excess - b.v.excess || b.score - a.score);
     return { list: out, reasons, exactFound };
+  }
+
+  // Tiefensuche über alle Startpunkte (gemischt) und alle erlaubten Abzweige innerhalb der Grenzen
+  function* systematic(G, lvl, caps, R, budget) {
+    const target = lvl.length;
+    const starts = [];
+    for (const s of G._starts[lvl.key]) for (const fwd of [true, false]) {
+      for (let r = MIN_DECISION_GAP + 5; r <= Math.min(s.len - 10, target - 1); r += 25) starts.push({ s, fwd, off: s.len - r });
+    }
+    for (let i = starts.length - 1; i > 0; i--) { const j = Math.floor(R() * (i + 1)); [starts[i], starts[j]] = [starts[j], starts[i]]; }
+    for (const st of starts) {
+      if (budget.steps <= 0) return;
+      const o0 = oriented(st.s, st.fwd);
+      const legs = [{ seg: st.s.id, fwd: st.fwd, d0: st.off, d1: st.s.len }];
+      yield* extend(G, lvl, caps, R, budget, legs, new Set([st.s.id]), new Set([o0.start]), st.s.len - st.off, o0, 0, 0, -1e9);
+    }
+  }
+  function* extend(G, lvl, caps, R, budget, legs, used, visited, acc, curO, turns, decisions, lastDec) {
+    const v = curO.end, target = lvl.length;
+    if (--budget.steps <= 0 || visited.has(v) || !crossOk(lvl, G, v)) return;
+    const deg = G.deg(v);
+    if (deg >= 3 && (acc - lastDec < MIN_DECISION_GAP || decisions >= caps.maxDecisions)) return;
+    const vIn = dirAtEnd(curO);
+    const d2 = decisions + (deg >= 3 ? 1 : 0), ld = deg >= 3 ? acc : lastDec;
+    const ids = (G.segAt.get(v) || []).slice();
+    for (let i = ids.length - 1; i > 0; i--) { const j = Math.floor(R() * (i + 1)); [ids[i], ids[j]] = [ids[j], ids[i]]; }
+    visited.add(v);
+    for (const id of ids) {
+      if (used.has(id)) continue;
+      const s = G.segs[id];
+      if (!segOk(G, lvl, s)) continue;
+      const f = s.a === v, o = oriented(s, f);
+      if (Math.abs(turnAngle(vIn, dirAtStart(o))) > 150) continue;   // keine Kehrtwende
+      const isTurn = isTurnAt(G, v, legs[legs.length - 1].seg, vIn, id);
+      if (caps.noStraight && deg >= 3 && !isTurn) continue;
+      const t2 = turns + (isTurn ? 1 : 0);
+      if (t2 > caps.maxTurns) continue;
+      if (acc + s.len >= target) {
+        if (t2 < lvl.minTurns || target - ld < MIN_DECISION_GAP) continue;
+        yield { level: lvl.key, legs: legs.concat([{ seg: id, fwd: f, d0: 0, d1: target - acc }]), length: target };
+        continue;
+      }
+      if (lvl.minTurns - t2 > caps.maxDecisions - d2) continue;   // fehlende Richtungswechsel passen nicht mehr ins Budget
+      used.add(id);
+      yield* extend(G, lvl, caps, R, budget, legs.concat([{ seg: id, fwd: f, d0: 0, d1: s.len }]), used, visited, acc + s.len, o, t2, d2, ld);
+      used.delete(id);
+    }
+    visited.delete(v);
   }
 
   // ---------- Komplette Tagespläne ----------
@@ -1026,7 +1097,7 @@ const Planner = (() => {
   function segOk(G, lvl, s) {
     if (!lvl.allowed.includes(s.cls)) return false;
     if (G.terrain === 'ort' && s.inside < TERRAIN.ort) return false;
-    if (s.unnamedPath && !G.allowPaths) return false;
+    if (s.footpath && !G.allowPaths) return false;
     if (s.blocked) return false;
     return true;
   }
@@ -1137,11 +1208,15 @@ const store = {
   set(v) { try { localStorage.setItem('trailplaner', JSON.stringify(v)); } catch {} },
 };
 
+// Vereinsbezogene Angaben an einer Stelle (Grundlage für den späteren Mehrvereinsbetrieb, siehe docs/architektur)
+const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946] };
 const saved = store.get();
+function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I' }, { name: 'Team 2', level: 'MT-II' }, { name: 'Team 3', level: 'MT-II' }]; }
+const EMPTY_RESULTS = $('#results').innerHTML;   // „So geht's“-Hinweis für den Neuanfang
 const state = {
   center: saved.center || null,
   placeName: saved.placeName || '',
-  teams: saved.teams || [{ name: 'Team 1', level: 'MT-I' }, { name: 'Team 2', level: 'MT-II' }, { name: 'Team 3', level: 'MT-II' }],
+  teams: saved.teams || defaultTeams(),
   graph: null, graphKey: '', pools: null, plans: [], active: 0, seed: Date.now() % 100000, planTeams: null,
   exam: null, examPools: null, examSeen: [],   // Prüfungsstand: eingefrorene Trails, Häkchen, Zuteilung
 };
@@ -1168,7 +1243,7 @@ renderMode();
 const persist = () => store.set({ basemap: typeof baseName === 'undefined' ? saved.basemap : baseName, center: state.center, placeName: state.placeName, teams: state.teams, startTime: $('#startTime').value, radius: $('#radius').value, minDist: $('#minDist').value, terrain: $('#terrain').value, allowPaths: $('#allowPaths').checked, avoidLoops: $('#avoidLoops').checked, mode: typeof planMode === 'undefined' ? saved.mode : planMode });
 
 // ---------- Karte ----------
-const map = L.map('map', { zoomControl: true }).setView(state.center ? [state.center.lat, state.center.lon] : [49.651, 9.946], state.center ? 15 : 13);
+const map = L.map('map', { zoomControl: true }).setView(state.center ? [state.center.lat, state.center.lon] : CLUB.home, state.center ? 15 : 13);
 // Hintergrundkarten ohne API-Schlüssel; fällt automatisch auf die nächste zurück, wenn eine nicht lädt
 const OSM_ATTR = '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>-Mitwirkende';
 const BASEMAPS = {
@@ -1549,6 +1624,20 @@ async function openExamFile(file) {
   }
   setStatus(`Prüfungsstand geöffnet: ${ex.trails.length} Trails, davon ${ex.trails.filter(t => t.checked).length} geprüft.`);
 }
+// Alles auf Anfang: Ort, Teams, Einstellungen, Vorschläge und Prüfungsstand (der Modus bleibt)
+function resetAll() {
+  if (!confirm('Alle Eingaben löschen und neu anfangen? Ein nicht als Datei gespeicherter Prüfungsstand geht dabei verloren.')) return;
+  Object.assign(state, { center: null, placeName: '', teams: defaultTeams(), graph: null, graphKey: '', pools: null, plans: [], active: 0, planTeams: null, exam: null, examPools: null, examSeen: [] });
+  try { localStorage.removeItem(EXAM_KEY); } catch {}
+  $('#placeInput').value = ''; $('#placeList').innerHTML = ''; $('#chosen').hidden = true; $('#chosenName').textContent = '';
+  $('#startTime').value = '10:00'; $('#radius').value = '1200'; $('#terrain').value = 'ort'; $('#minDist').value = '30';
+  $('#allowPaths').checked = false; $('#avoidLoops').checked = true;
+  trailLayer.clearLayers(); drawArea(); map.setView(CLUB.home, 13);
+  $('#results').innerHTML = EMPTY_RESULTS;
+  persist(); renderTeams(); updateExamBar();
+  setStatus('Alle Eingaben gelöscht. Ort wählen, Teams anlegen und neu planen.');
+}
+$('#resetBtn').addEventListener('click', resetAll);
 $('#examSave').addEventListener('click', saveExamFile);
 $('#examOpen').addEventListener('click', () => $('#examFile').click());
 $('#examFile').addEventListener('change', e => { const f = e.target.files[0]; e.target.value = ''; if (f) openExamFile(f); });
@@ -1754,14 +1843,14 @@ async function openSheets() {
       <div class="sheet-map"><div class="sheet-north">▲ N</div></div>
       <div class="sheet-foot"><span></span><span class="brand"></span></div>`;
     sh.querySelector('.sheet-title b').textContent = `Trail ${i + 1} · ${t.level}`;
-    sh.querySelector('.sheet-title span').textContent = `Prüfung HSV Giebelstadt${day ? ' · ' + day : ''}`;
+    sh.querySelector('.sheet-title span').textContent = `Prüfung ${CLUB.short}${day ? ' · ' + day : ''}`;
     const vals = [who.hf, a.vp, who.hund, `${t.length} m`, `${place}${place ? ' · ' : ''}${t.startStreet} → ${t.endStreet}`];
     sh.querySelectorAll('.sheet-head .v').forEach((el, k) => { el.textContent = vals[k]; el.classList.toggle('blank', !vals[k]); });
     const s = t.ll[0], e = t.ll[t.ll.length - 1];
     sh.querySelector('.sheet-foot span').textContent = `Start: ${s[0].toFixed(5)}, ${s[1].toFixed(5)} · Ende: ${e[0].toFixed(5)}, ${e[1].toFixed(5)}`;
     const brand = sh.querySelector('.sheet-foot .brand');
     if (logo) { const l = logo.cloneNode(true); l.removeAttribute('class'); brand.append(l); }
-    brand.append('Trailplaner · HSV Giebelstadt');
+    brand.append(`Trailplaner · ${CLUB.short}`);
     ov.append(sh);
 
     const m = L.map(sh.querySelector('.sheet-map'), { zoomControl: false, attributionControl: true, dragging: false, scrollWheelZoom: false, doubleClickZoom: false, boxZoom: false, keyboard: false, touchZoom: false, zoomSnap: 0.25 });

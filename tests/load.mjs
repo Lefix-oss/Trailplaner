@@ -21,7 +21,8 @@ function run(marker) {
   for (const [k, v] of Object.entries(module.exports)) {
     api[k] = typeof v !== 'function' ? v : (...args) => {
       const r = v(...args);
-      return r && typeof r === 'object' ? structuredClone(r) : r;
+      if (!r || typeof r !== 'object') return r;
+      try { return structuredClone(r); } catch { return r; }   // Graphen enthalten Funktionen: unverändert durchreichen
     };
   }
   return api;
