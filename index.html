@@ -1288,7 +1288,7 @@ const EMPTY_RESULTS = $('#results').innerHTML;   // „So geht's“-Hinweis für
 const state = {
   places: initialPlaces(), activePlace: saved.activePlace || 'A',
   teams: saved.teams || defaultTeams(),
-  graph: null, graphKey: '', pools: null, plans: [], active: 0, seed: Date.now() % 100000, planTeams: null,
+  graphs: new Map(), pools: null, plans: [], active: 0, seed: Date.now() % 100000, planTeams: null,
   exam: null, examPools: null, examSeen: [],   // Prüfungsstand: eingefrorene Trails, Häkchen, Zuteilung
 };
 if (saved.startTime) $('#startTime').value = saved.startTime;
@@ -1427,7 +1427,7 @@ function removePlace(id) {
 }
 $('#addPlace').addEventListener('click', addPlace);
 renderPlaces();
-$('#radius').addEventListener('change', () => { invalidate(); state.graph = null; drawArea(); persist(); });
+$('#radius').addEventListener('change', () => { invalidate(); drawArea(); persist(); });
 for (const id of ['#minDist', '#allowPaths', '#avoidLoops']) $(id).addEventListener('change', () => { invalidate(); persist(); });
 $('#startTime').addEventListener('change', () => { persist(); renderResults(); });
 
@@ -1567,54 +1567,88 @@ const tick = () => new Promise(r => setTimeout(r, 20));
 function setStatus(t, err = false) { const s = $('#status'); s.textContent = t; s.classList.toggle('err', err); }
 
 $('#planBtn').addEventListener('click', () => run(true));
-async function run(reseed = true) {
-  if (!state.center) { setStatus('Bitte zuerst eine Ortschaft wählen oder auf der Karte tippen.', true); return; }
+// Wegenetz je Ort (Mitte + Radius), einmal gebaut und dann wiederverwendet
+const placeSuffix = id => (state.places.length > 1 ? ' · ' + placeLabel(state.places.find(p => p.id === id) || { id }) : '');
+const placeLabel = p => (p.name ? p.name.split(',')[0].trim() : `Ort ${p.id}`);
+async function graphFor(place, radius) {
+  const key = Pruefung.osmKey(place.center, radius);
+  if (!state.graphs.has(key)) {
+    setStatus(`Lade Wege für ${placeLabel(place)} aus OpenStreetMap …`);
+    const osm = await loadOSM(place.center, radius);
+    setStatus('Baue Wegenetz …'); await tick();
+    state.graphs.set(key, Planner.buildGraph(osm, place.center, radius));
+  }
+  return state.graphs.get(key);
+}
+// Plant die Teams der genannten Orte, Ort für Ort. Bereits geplante Trails (auch anderer Orte und fixedLLs)
+// sind Hindernisse, weil sich die Suchkreise benachbarter Orte überlappen können.
+async function planPlaces(placeIds, mode, fixedLLs = []) {
+  const radius = +$('#radius').value, minDist = +$('#minDist').value, many = state.places.length > 1;
+  state.seed = (state.seed * 7919 + 13) % 1000003;
+  const R = Planner.rng(state.seed);
+  const placed = fixedLLs.slice(), byTeam = new Map(), pools = {};
+  let noAreas = false;
+  for (const pid of placeIds) {
+    const place = state.places.find(p => p.id === pid);
+    const idx = state.teams.map((t, i) => (t.place === pid ? i : -1)).filter(i => i >= 0);
+    if (!place || !idx.length) continue;
+    if (!place.center) return { ok: false, msg: many ? `Für Ort ${pid} ist noch keine Ortschaft gewählt: Ort ${pid} in der Liste antippen und suchen oder auf der Karte tippen.` : 'Bitte zuerst eine Ortschaft wählen oder auf der Karte tippen.' };
+    let G;
+    try { G = await graphFor(place, radius); }
+    catch { return { ok: false, msg: 'OpenStreetMap ist gerade nicht erreichbar oder überlastet. Bitte in einer Minute noch einmal versuchen.' }; }
+    if (!G.settlementAreas) noAreas = true;
+    Planner.setTerrain(G, place.terrain, $('#allowPaths').checked, $('#avoidLoops').checked);
+    const teams = idx.map(i => ({ ...state.teams[i] }));
+    const obst = placed.map(ll => Pruefung.obstacle({ ll }, G.fromLatLon));
+    const p = {};
+    for (const lv of [...new Set(teams.map(t => t.level))]) {
+      setStatus(`${many ? placeLabel(place) + ': ' : ''}Würfle ${lv}-Trails und prüfe sie gegen die PO …`); await tick();
+      const pool = Planner.pool(G, lv, R, { want: 45, maxTries: 10000, mode });
+      pool.list.forEach(c => { c.G = G; c.place = pid; c.id = pid + ':' + c.id; });
+      pool.list = pool.list.filter(c => obst.every(o => Planner.compatible(c, o, minDist)));
+      p[lv] = pool;
+    }
+    pools[pid] = p;
+    const res = Planner.plans(G, teams, p, R, minDist, 1);
+    if (!res.plans.length) {
+      const pre = many ? `${placeLabel(place)}: ` : '';
+      const emptyLv = Object.keys(p).find(lv => !p[lv].list.length);
+      let msg;
+      if (emptyLv) {
+        const top = Object.entries(p[emptyLv].reasons).sort((a, b) => b[1] - a[1]).slice(0, 2).map(x => x[0]).join(', ');
+        const tip = place.terrain === 'ort' ? 'Beim Gelände „Ort und Ortsrand“ wählen oder' : '';
+        msg = `${pre}Für ${emptyLv} habe ich hier keinen passenden Trail gefunden (häufigste Gründe: ${top || 'kaum Wege'}). ${tip} Suchgebiet vergrößern oder Ort verschieben.`.replace('  ', ' ');
+      } else {
+        const wider = place.terrain === 'ort' ? '„Ort und Ortsrand“' : place.terrain === 'mix' ? '„Auch Feld und Wald“' : '';
+        msg = `${pre}Die Trails lassen sich hier nicht ohne Überschneidung unterbringen.${wider ? ` Beim Gelände ${wider} wählen oder` : ''} weniger Teams, kleineren Abstand, größeres Suchgebiet oder einen weiteren Ort wählen.`;
+      }
+      return { ok: false, msg };
+    }
+    res.plans[0].forEach((c, k) => { byTeam.set(idx[k], c); placed.push(c.v.pts.map(q => G.toLatLon(q))); });
+  }
+  const order = [...byTeam.keys()].sort((a, b) => a - b);
+  return { ok: true, plan: order.map(i => byTeam.get(i)), teams: order.map(i => ({ ...state.teams[i] })), pools, noAreas };
+}
+
+async function run() {
+  const ids = state.places.filter(p => state.teams.some(t => t.place === p.id)).map(p => p.id);
   if (planMode === 'pruefung' && state.exam && !confirm('Neu planen verwirft den aktuellen Prüfungsstand. Fortfahren?')) return;
   const btn = $('#planBtn'); btn.disabled = true;
   try {
-    const radius = +$('#radius').value;
-    const key = `${state.center.lat.toFixed(5)},${state.center.lon.toFixed(5)},${radius}`;
-    if (!state.graph || state.graphKey !== key) {
-      setStatus('Lade Wege aus OpenStreetMap …');
-      let osm;
-      try { osm = await loadOSM(state.center, radius); }
-      catch (e) { setStatus('OpenStreetMap ist gerade nicht erreichbar oder überlastet. Bitte in einer Minute noch einmal versuchen.', true); return; }
-      setStatus('Baue Wegenetz …'); await tick();
-      state.graph = Planner.buildGraph(osm, state.center, radius);
-      state.graphKey = key; state.pools = null;
+    const r = await planPlaces(ids, planMode);
+    if (!r.ok) {
+      state.plans = []; state.pools = null; state.planTeams = null;
+      renderResults(); setStatus(r.msg, true);
+      return;
     }
-    Planner.setTerrain(state.graph, $('#terrain').value, $('#allowPaths').checked, $('#avoidLoops').checked);
-    if (reseed === true || !state.pools) state.seed = (state.seed * 7919 + 13) % 1000003;
-    const R = Planner.rng(state.seed);
-    const teams = state.teams.map(t => ({ ...t }));
-    const levels = [...new Set(teams.map(t => t.level))];
-    const pools = {};
-    for (const lv of levels) {
-      setStatus(`Würfle ${lv}-Trails und prüfe sie gegen die PO …`); await tick();
-      pools[lv] = Planner.pool(state.graph, lv, R, { want: 45, maxTries: 10000, mode: planMode });
-    }
-    state.pools = pools; state.planTeams = teams;
-    const minDist = +$('#minDist').value;
-    const res = Planner.plans(state.graph, teams, pools, R, minDist, 1);
-    state.plans = res.plans.map(p => p.slice()); state.active = 0;
-    state.seen = teams.map((_, i) => new Set(state.plans[0] ? [state.plans[0][i].id] : []));
-    if (!state.plans.length) {
-      const emptyLv = levels.find(lv => !pools[lv].list.length);
-      let msg;
-      if (emptyLv) {
-        const top = Object.entries(pools[emptyLv].reasons).sort((a, b) => b[1] - a[1]).slice(0, 2).map(x => x[0]).join(', ');
-        const tip = $('#terrain').value === 'ort' ? 'Unter „Gelände“ auf „Ort und Ortsrand“ stellen oder' : '';
-        msg = `Für ${emptyLv} habe ich hier keinen passenden Trail gefunden (häufigste Gründe: ${top || 'kaum Wege'}). ${tip} Suchgebiet vergrößern oder Ort verschieben.`.replace('  ', ' ');
-      } else msg = `Die Trails lassen sich hier nicht ohne Überschneidung unterbringen. Weniger Teams, kleineren Abstand oder größeres Suchgebiet wählen.`;
-      setStatus(msg, true);
-    } else {
-      const harder = state.plans[0].filter(c => !c.v.targetOk).length;
-      setStatus(`Trailplan erstellt. Alle Trails erfüllen die PO-Mindestanforderungen laut Kartendaten.` +
+    state.plans = [r.plan]; state.active = 0; state.pools = r.pools; state.planTeams = r.teams;
+    state.seen = r.plan.map(c => new Set([c.id]));
+    const harder = r.plan.filter(c => !c.v.targetOk).length;
+    setStatus(`Trailplan erstellt. Alle Trails erfüllen die PO-Mindestanforderungen laut Kartendaten.` +
       (harder ? ` Achtung: ${harder} Trail${harder === 1 ? ' ist' : 's sind'} schwerer als die Vorgabe (siehe Markierung).` : ' Alle treffen die Vorgabe genau.') +
       ' Vor Ort prüfen: Zugang, Sicht, Abholung, Verkehr.' +
-      (state.graph.settlementAreas ? '' : ' Hinweis: Hier sind keine Wohngebiete kartiert, die Ortsgrenze ist nur geschätzt.'));
-      if (planMode === 'pruefung') startExam();
-    }
+      (r.noAreas ? ' Hinweis: Hier sind keine Wohngebiete kartiert, die Ortsgrenze ist nur geschätzt.' : ''));
+    if (planMode === 'pruefung') startExam();
     renderResults();
     if (planMode === 'pruefung' && state.exam) drawExam(true);
   } catch (e) {
@@ -1630,11 +1664,11 @@ function layTime(lv) {
   const dayBefore = t < 0; t = ((t % 1440) + 1440) % 1440;
   return `${String(Math.floor(t / 60)).padStart(2, '0')}:${String(t % 60).padStart(2, '0')}${dayBefore ? ' (Vortag)' : ''}`;
 }
-function startLL(c) { return state.graph.toLatLon(c.v.pts[0]); }
+function startLL(c) { return c.G.toLatLon(c.v.pts[0]); }
 // Testfunktion: ganzer Trail als Fußweg-Route in Google Maps (Start, Ziel, bis zu 8 Zwischenpunkte)
 function routeLink(c) {
   const pts = c.v.pts;
-  const steps = Planner.describe(state.graph, c.tr).filter(s => s.options);
+  const steps = Planner.describe(c.G, c.tr).filter(s => s.options);
   const L0 = c.v.length;
   let ds = steps.map(s => s.at);
   for (let k = 1; ds.length < 8 && k < 8; k++) ds.push(Math.round(L0 * k / 8));
@@ -1642,15 +1676,15 @@ function routeLink(c) {
   const maxWp = /Android|iPhone|iPad|Mobile/i.test(navigator.userAgent) ? 3 : 8;
   ds = [...new Set(ds)].filter(d => d > 5 && d < L0 - 5).sort((x, y) => x - y);
   if (ds.length > maxWp) ds = Array.from({ length: maxWp }, (_, k) => ds[Math.round(k * (ds.length - 1) / Math.max(1, maxWp - 1))]);
-  const fmt = p => { const q = state.graph.toLatLon(p); return q[0].toFixed(6) + ',' + q[1].toFixed(6); };
+  const fmt = p => { const q = c.G.toLatLon(p); return q[0].toFixed(6) + ',' + q[1].toFixed(6); };
   return 'https://www.google.com/maps/dir/?api=1&travelmode=walking&origin=' + fmt(pts[0]) + '&destination=' + fmt(pts[pts.length - 1]) +
     '&waypoints=' + encodeURIComponent(ds.map(d => fmt(pointAtDist(pts, d))).join('|'));
 }
 const pointLink = q => 'https://www.google.com/maps/search/?api=1&query=' + q[0].toFixed(6) + ',' + q[1].toFixed(6);
 function mapsLink(c) { return pointLink(startLL(c)); }
-function endLink(c) { return pointLink(state.graph.toLatLon(c.v.pts[c.v.pts.length - 1])); }
+function endLink(c) { return pointLink(c.G.toLatLon(c.v.pts[c.v.pts.length - 1])); }
 function trailText(c, t) {
-  const steps = Planner.describe(state.graph, c.tr);
+  const steps = Planner.describe(c.G, c.tr);
   const lv = Planner.LEVELS[c.tr.level];
   return [`${t.name} (${c.tr.level}): ${Math.round(c.v.length)} m, Liegezeit mind. ${lv.minAgeH} h, legen bis ${layTime(c.tr.level)}`,
     `Startpunkt: ${mapsLink(c)}`,
@@ -1680,17 +1714,17 @@ function drawPlan() {
   const bounds = [];
   plan.forEach((c, i) => {
     const color = COLORS[i % COLORS.length];
-    const ll = c.v.pts.map(p => state.graph.toLatLon(p));
+    const ll = c.v.pts.map(p => c.G.toLatLon(p));
     bounds.push(...ll);
     L.polyline(ll, { color: '#ffffff', weight: 9, opacity: 0.9 }).addTo(trailLayer);
     L.polyline(ll, { color, weight: 5, opacity: 1 }).addTo(trailLayer)
-      .bindTooltip(`Trail ${i + 1} · ${state.planTeams[i].name} · ${c.tr.level} · ${Math.round(c.v.length)} m`, { sticky: true });
-    const steps = Planner.describe(state.graph, c.tr);
+      .bindTooltip(`Trail ${i + 1} · ${state.planTeams[i].name} · ${c.tr.level}${placeSuffix(c.place)} · ${Math.round(c.v.length)} m`, { sticky: true });
+    const steps = Planner.describe(c.G, c.tr);
     let n = 0;
     steps.filter(s => s.kind === 'turn').forEach(s => {
       n++;
       const p = pointAtDist(c.v.pts, s.at);
-      L.marker(state.graph.toLatLon(p), { icon: L.divIcon({ className: '', html: `<div class="lf-mark lf-turn" style="background:${color}"></div>`, iconSize: [12, 12], iconAnchor: [6, 6] }), keyboard: false })
+      L.marker(c.G.toLatLon(p), { icon: L.divIcon({ className: '', html: `<div class="lf-mark lf-turn" style="background:${color}"></div>`, iconSize: [12, 12], iconAnchor: [6, 6] }), keyboard: false })
         .bindTooltip(`Trail ${i + 1}, ${s.at} m: ${s.text}`).addTo(trailLayer);
     });
     L.marker(ll[0], { icon: icon('', color, 'S' + (i + 1)) }).bindTooltip(`Trail ${i + 1} · ${state.planTeams[i].name}: Start`).addTo(trailLayer);
@@ -1711,14 +1745,14 @@ function pointAtDist(pts, d) {
 // ---------- Prüfungsablauf ----------
 // Ein geplanter Trail wird eingefroren: danach zählt nur noch dieser Schnappschuss, nie mehr der OSM-Graph
 function snapshot(c) {
-  const G = state.graph, v = Planner.validate(G, c.tr), names = Planner.endpointNames(G, c.tr);
+  const G = c.G, v = Planner.validate(G, c.tr), names = Planner.endpointNames(G, c.tr);
   const soft = v.checks.every(x => x.ok || x.soft) ? v.checks.find(x => x.soft && !x.ok) : null;
   return {
     harder: soft ? `${soft.detail}. ${soft.label}` : '',
     level: c.tr.level, ll: c.v.pts.map(p => G.toLatLon(p)), length: Math.round(c.v.length),
     turns: v.turns, decisions: v.decisions, crossings: v.crossings,
     steps: Planner.describe(G, c.tr).map(s => ({ at: s.at, kind: s.kind, text: s.text, options: s.options || 0 })),
-    startStreet: names.start, endStreet: names.end, checked: false,
+    startStreet: names.start, endStreet: names.end, checked: false, place: c.place,
   };
 }
 function examSettings() {
@@ -1786,7 +1820,7 @@ async function openExamFile(file) {
 // Alles auf Anfang: Ort, Teams, Einstellungen, Vorschläge und Prüfungsstand (der Modus bleibt)
 function resetAll() {
   if (!confirm('Alle Eingaben löschen und neu anfangen? Ein nicht als Datei gespeicherter Prüfungsstand geht dabei verloren.')) return;
-  Object.assign(state, { places: [blankPlace('A')], activePlace: 'A', teams: defaultTeams(), graph: null, graphKey: '', pools: null, plans: [], active: 0, planTeams: null, exam: null, examPools: null, examSeen: [] });
+  Object.assign(state, { places: [blankPlace('A')], activePlace: 'A', teams: defaultTeams(), pools: null, plans: [], active: 0, planTeams: null, exam: null, examPools: null, examSeen: [] });
   try { localStorage.removeItem(EXAM_KEY); } catch {}
   $('#placeInput').value = ''; $('#placeList').innerHTML = ''; renderPlaces();
   $('#startTime').value = '10:00'; $('#radius').value = '1200'; $('#minDist').value = '30';
@@ -2060,8 +2094,8 @@ function renderResults() {
   plan.forEach((c, i) => {
     const t = state.planTeams[i];
     const lv = Planner.LEVELS[c.tr.level];
-    const v = Planner.validate(state.graph, c.tr);
-    const steps = Planner.describe(state.graph, c.tr);
+    const v = Planner.validate(c.G, c.tr);
+    const steps = Planner.describe(c.G, c.tr);
     const card = document.createElement('article'); card.className = 'card';
     const allOk = v.checks.every(x => x.ok);
     const hardOk = v.checks.every(x => x.ok || x.soft);
@@ -2095,7 +2129,10 @@ function renderResults() {
     });
     const act = card.querySelector('.actions');
     // Alternativen für dieses Team: passend zur Stufe und zu den übrigen Trails, beste zuerst, ohne Wiederholung
-    const alts = Planner.alternatives(plan, i, state.pools, state.planTeams, +$('#minDist').value);
+    const same = plan.map((x, k) => (x.place === c.place ? k : -1)).filter(k => k >= 0);
+    const obst = plan.filter(x => x.place !== c.place).map(x => Pruefung.obstacle({ ll: x.v.pts.map(q => x.G.toLatLon(q)) }, c.G.fromLatLon));
+    const alts = Planner.alternatives(same.map(k => plan[k]), same.indexOf(i), state.pools[c.place], same.map(k => state.planTeams[k]), +$('#minDist').value)
+      .filter(a => obst.every(o => Planner.compatible(a, o, +$('#minDist').value)));
     const fresh = alts.filter(c => !state.seen[i].has(c.id));
     const bAlt = mk(alts.length ? `Alternativ-Trail (${alts.length} verfügbar)` : 'Keine Alternative', () => {
       if (!fresh.length) state.seen[i] = new Set([plan[i].id]);
@@ -2113,8 +2150,9 @@ function renderResults() {
   host.append(cards);
   // Start- bzw. Endpunkte aller Trails per WhatsApp (z. B. für Trailleger, Versteckpersonen, Prüfungsleitung)
   const waLink = (title, linkFn) => {
-    const text = [`${title} Trailplan ${state.placeName}`, ...plan.map((c, i) =>
-      `Trail ${i + 1} – ${state.planTeams[i].name} (${c.tr.level}):\n${linkFn(c)}`)].join('\n\n');
+    const where = [...new Set(plan.map(c => placeLabel(state.places.find(p => p.id === c.place) || { id: c.place })))].join(' und ');
+    const text = [`${title} Trailplan ${where}`, ...plan.map((c, i) =>
+      `Trail ${i + 1} – ${state.planTeams[i].name} (${c.tr.level}${placeSuffix(c.place)}):\n${linkFn(c)}`)].join('\n\n');
     const el = document.createElement('a');
     el.href = 'https://wa.me/?text=' + encodeURIComponent(text); el.target = '_blank'; el.rel = 'noopener'; el.className = 'wa';
     el.textContent = `Alle ${title} per WhatsApp senden`;
