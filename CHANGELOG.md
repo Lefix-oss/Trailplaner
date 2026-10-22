@@ -12,6 +12,8 @@ GPX-Import: Übergangswege nach der fachlichen Regel statt nach alten Generatorg
 - **Lücken nur noch, wenn wirklich kein zulässiger Weg existiert,** mit Grund, zum Beispiel „Start von Trail 3 nur über Trail 4 erreichbar“. Die Luftlinie steht nur zur Information daneben.
 - **Anzeige:** Vorschau, Trailkarte und Karte zeigen jeden gefundenen Weg mit Länge und Hinweisen. Die Hinweise werden im Prüfungsstand mitgespeichert.
 - Reihenfolge und Nummerierung, die importierten Strecken und die automatische Trailplanung bleiben unverändert.
+- **Offener Punkt:** Die Reihenfolge wird noch mit der alten Fußwegregel bewertet (75–250 m, nur der nächste Trail gesperrt), die Übergänge danach mit der neuen Regel. Das ist bewusst so, damit sich die Nummerierung nicht verschiebt. Folge: In seltenen Fällen könnte eine andere Reihenfolge nach der neuen Regel kürzere Übergänge haben. Eine Angleichung würde die Nummerierung bestehender Importe ändern und ist deshalb eine eigene Entscheidung.
+- **Bekannte Grenze:** Liegen zwei Starts fast an derselben Stelle (Konflikt), endet der Übergang zwangsläufig direkt neben dem späteren Trail. Die Konfliktliste meldet das.
 
 ## V1.9 – 22.10.2026
 

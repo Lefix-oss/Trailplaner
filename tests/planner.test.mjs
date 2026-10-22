@@ -517,3 +517,15 @@ test('transitPath: hat der nächste Trail keine Abzweigung, darf der Weg ihn nic
   assert.ok(!r.pts.some(p => Math.abs(p[1] - 90) < 1 && p[0] > 281 && p[0] < 351), 'nicht über den Trail selbst (x 280 bis 350)');
   assert.equal(Math.round(r.dist), 320);   // außen herum und von hinten an den Start
 });
+
+test('transitPath: Zugang über die erste Abzweigung nur, wenn kein späterer Trail auf dem Startstück liegt', () => {
+  const { G, W, cand } = transitSet();
+  const N3 = cand('N3', [leg(G, [3, 2], [3, 3], 15), leg(G, [3, 3], [2, 3])]);               // Start bei x = 195 auf Reihe 3, Abzweigung bei x = 270
+  const L = cand('L', [leg(G, [3, 3], [3, 2], 39), leg(G, [3, 2], [2, 2])]);                 // späterer Trail auf demselben Stück, x = 231 bis 180
+  const r = Planner.transitPath(G, W, [360, 270], N3, [L]);
+  const dmin = r.pts ? Math.min(...r.pts.slice(1).map((p, i) => Math.min(...L.v.pts.slice(1).map((q, j) => {
+    const a = L.v.pts[j], dx = q[0] - a[0], dy = q[1] - a[1], l2 = dx * dx + dy * dy, t = l2 ? Math.max(0, Math.min(1, ((p[0] - a[0]) * dx + (p[1] - a[1]) * dy) / l2)) : 0;
+    return Math.hypot(p[0] - a[0] - t * dx, p[1] - a[1] - t * dy);
+  })))) : Infinity;
+  assert.ok(r.dist === null || dmin > 1, `Weg berührt den späteren Trail (${Math.round(dmin)} m)`);
+});

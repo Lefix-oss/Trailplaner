@@ -1470,6 +1470,12 @@ const Planner = (() => {
     if (legs.length > 1) {
       const l0 = legs[0], S0 = G.segs[l0.seg], os = oriented(S0, l0.fwd);
       exit = { node: os.end, off: S0.len - l0.d0, tail: slice(os.pts, os.cum, l0.d0, S0.len).reverse(), S0, l0 };
+      // Zugang über die Abzweigung nur, wenn kein späterer Trail das Startstück zwischen Start und Abzweigung berührt
+      const [a, b] = legRange(S0, { fwd: l0.fwd, d0: l0.d0, d1: S0.len });
+      for (let k = 0; exit && k + 1 < S0.nodes.length; k++) {
+        const lo = Math.max(a, S0.cum[k]) - S0.cum[k], hi = Math.min(b, S0.cum[k + 1]) - S0.cum[k], e = W.edges[base[S0.id] + k];
+        if (hi > lo && later.some(c => transitTouches(G, c, e, true).some(([x, y]) => y > lo + 0.5 && x < hi - 0.5))) exit = null;
+      }
     }
     const lead = id => id >= base[exit.S0.id] && id < base[exit.S0.id] + exit.S0.nodes.length - 1;
     // Ziel liegt auf dem Startstück vor dem Start: direkt auf dem Startstück zurück zum Start
@@ -1533,6 +1539,8 @@ const Planner = (() => {
   // jede Lücke 1000 m plus Luftlinie. Stufen bleiben in der Reihenfolge MT-I, MT-II, MT-III. Bis 12 Trails exakt
   // (dynamische Programmierung über Teilmengen), darüber nächster Nachbar mit 2-opt. Danach bekommt jeder Übergang den
   // kürzesten zulässigen Weg nach transitPath; gibt es keinen, ist er eine Lücke (Grund in notes).
+  // Offener Punkt: Die Bewertung der Reihenfolge nutzt noch die alte Fußwegregel (walkPath, 75–250 m, nur der nächste Trail
+  // gesperrt), die Übergänge danach transitPath. Bewusst so belassen, damit sich die Nummerierung nicht ändert.
   // Ergebnis: { order, links, gaps, notes } wie chain(); die Trails selbst bleiben unverändert.
   const GAP_COST = 1000;
   function orderFixed(G, W, cands, minDist, o = {}) {
@@ -2924,7 +2932,7 @@ function buildImportChain() {
       const nums = ((L.why && L.why.by) || []).map(x => imp.order.indexOf(x) + 1).filter(n => n > 0)
         .map(n => (n === k + 1 ? `den weiteren Verlauf von Trail ${n}` : `Trail ${n}`)).join(', ');
       parts.unshift(!L.why ? 'kein zulässiger Fußweg' : L.why.why === 'start' ? `Start von Trail ${k + 1} nur über ${nums || 'einen späteren Trail'} erreichbar`
-        : L.why.why === 'ziel' ? `vom Ziel von Trail ${k} führt jeder Weg über ${nums || 'einen späteren Trail'}` : 'kein Weg unter 1,5 km, der keinen späteren Trail kreuzt oder benutzt');
+        : L.why.why === 'ziel' ? `vom Ziel von Trail ${k} führt jeder Weg über ${nums || 'einen späteren Trail'}` : 'kein zulässiger Fußweg bis 1,5 km gefunden, der keinen späteren Trail kreuzt oder benutzt (1,5 km ist die technische Grenze der Suche, keine Regel)');
     }
     L.note = parts.join('; ');
   });
