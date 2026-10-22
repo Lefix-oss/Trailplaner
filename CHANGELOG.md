@@ -2,6 +2,16 @@
 
 Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Die aktuelle Version steht in der App neben der Überschrift.
 
+## V1.7 – 22.10.2026
+
+Absicherung für die Weitergabe an externe Tester.
+
+- **Dateien öffnen:** Beim Öffnen eines gespeicherten Stands werden Zahlenfelder (Länge, Richtungswechsel, Entscheidungsstellen, Kreuzungen, Fußwege, Meterangaben der Schritte) geprüft. Enthält eine Datei dort Text oder HTML, wird sie als „beschädigt“ abgelehnt. Bisher hätte eine präparierte Datei Skript in der Seite ausführen können. Alte, gültige Dateien öffnen weiter wie bisher.
+- **Keine Schriften und kein Leaflet mehr von Google und Cloudflare:** Die Schriften (Barlow, Barlow Condensed, IBM Plex Mono) und die Kartenbibliothek Leaflet 1.9.4 liegen jetzt im Ordner `vendor/` und werden von der App selbst ausgeliefert. Beim Öffnen wird die IP-Adresse nicht mehr an Google oder Cloudflare übertragen. Die Prüfsummen von Leaflet stimmen mit den offiziellen Werten überein.
+- **Overpass:** Der Server `maps.mail.ru` ist aus der Liste entfernt. Es bleiben drei Server.
+- **Hinweis „Testversion · Datenschutz“** unten in der Seitenleiste: Wer verantwortlich ist, dass die Eingaben nur im Browser liegen, welche Dienste Dritter angefragt werden und dass in der Testversion keine echten Namen eingegeben werden sollen.
+- Der alte Apps-Script-Export `Trailplaner_neu.json` ist aus dem Repository entfernt (bleibt in der Git-Historie).
+
 ## V1.6 – 22.10.2026
 
 - **Ersetzen in der Kette findet öfter einen Ersatz:** Der Planer sucht jetzt auch rückwärts. Er würfelt Trails, die am Start des nächsten Trails beginnen, dreht sie um und prüft sie komplett neu gegen die PO. So enden sie in Fußweite vor dem nächsten Start. Das hilft vor allem am Anfang und in der Mitte einer Kette.

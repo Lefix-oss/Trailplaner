@@ -1,0 +1,3 @@
+Barlow, Barlow Condensed (The Barlow Project Authors, https://github.com/jpt/barlow) und IBM Plex Mono (IBM Corp., https://github.com/IBM/plex)
+stehen unter der SIL Open Font License, Version 1.1: https://openfontlicense.org
+Die Dateien stammen von Google Fonts (fonts.google.com), Zeichensatz "latin".

@@ -5,10 +5,8 @@
 <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>Trailplaner</title>
 <meta name="description" content="Plant PO-konforme Mantrailing-Trails (DVG MT-I bis MT-III) für eine Ortschaft.">
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@600;700&family=Barlow:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap">
-<link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.css">
+<link rel="stylesheet" href="vendor/fonts/fonts.css">
+<link rel="stylesheet" href="vendor/leaflet/leaflet.css">
 <style>
 /* Layout: Bedienleiste links (Handy: oben), Karte rechts (Handy: darunter). Signalorange wie die Warnweste. */
 :root {
@@ -226,6 +224,8 @@ details.steps-box ol.steps { padding: 6px 0 0; }
 .empty b { color: var(--ink); }
 .foot { font-size: 12px; color: var(--muted); line-height: 1.5; }
 .foot a { color: inherit; }
+details.privacy summary { cursor: pointer; font-weight: 600; }
+details.privacy p { margin: 6px 0 0; }
 
 .lf-mark { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; color: #fff; font: 700 13px/1 "Barlow Condensed", sans-serif; border: 2px solid #fff; box-shadow: 0 1px 4px rgba(0,0,0,.4); }
 .lf-lbl { width: 38px; height: 24px; border-radius: 12px; font-size: 14px; letter-spacing: .02em; }
@@ -319,11 +319,19 @@ details.steps-box ol.steps { padding: 6px 0 0; }
     </section>
 
     <p class="foot">Kartendaten © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a>-Mitwirkende. Die Daten können Privatwege, Baustellen oder fehlende Wege enthalten: Trail vor dem Legen kurz vor Ort prüfen. Ausgelegt für Trainings nach DVG-PO; Prüfungstrails legt die Prüfungsleitung.</p>
+
+    <details class="foot privacy">
+      <summary>Testversion · Datenschutz</summary>
+      <p><b>Verantwortlich:</b> <span id="privacyWho"></span>. Dies ist eine Testversion.</p>
+      <p><b>Deine Eingaben</b> (Teams, Namen, Trails, Zuteilung) bleiben nur in diesem Browser. Sie werden nicht an einen Server des Trailplaners gesendet. Löschst du die Browserdaten, sind sie weg: „Stand speichern …“ sichert eine Datei. Bitte gib in der Testversion keine echten Namen ein.</p>
+      <p><b>Dienste Dritter:</b> Beim Benutzen sehen diese Anbieter deine IP-Adresse: Kartenkacheln (Esri, OpenStreetMap, OpenTopoMap), die Ortssuche (OpenStreetMap Nominatim) und, für Orte ohne gespeicherten Auszug, die Wegedaten (Overpass-Server overpass-api.de, overpass.kumi.systems und overpass.private.coffee, mit dem Ort, den du planst). Teilst du etwas per WhatsApp, gehen die Texte an WhatsApp.</p>
+      <p>Öffne Trailplan-Dateien nur aus Quellen, denen du vertraust.</p>
+    </details>
   </aside>
   <div id="map" role="region" aria-label="Karte"></div>
 </div>
 
-<script src="https://cdnjs.cloudflare.com/ajax/libs/leaflet/1.9.4/leaflet.min.js"></script>
+<script src="vendor/leaflet/leaflet.js"></script>
 <script>
 /* Trailplaner – Planungslogik (ohne DOM, testbar mit Node)
  * Grundlage: DVG-Prüfungsordnung Mantrailing, gültig ab 06.05.2024
@@ -1543,6 +1551,13 @@ const Pruefung = (() => {
       const pt = p => Array.isArray(p) && p.length >= 2 && num(p[0]) && num(p[1]);
       if (!t || !Array.isArray(t.ll) || t.ll.length < 2 || !t.ll.every(pt)) throw new Error(`Die Datei ist beschädigt: Trail ${i + 1} hat keine Strecke.`);
       if (!LEVEL_KEYS.includes(t.level) || (t.steps !== undefined && !Array.isArray(t.steps))) throw new Error(`Die Datei ist beschädigt: Trail ${i + 1} ist beschädigt.`);
+      // Zahlen und Texte prüfen: sie werden später in die Seite geschrieben, eine fremde Datei darf dort nichts einschleusen
+      const bad = () => new Error(`Die Datei ist beschädigt: Trail ${i + 1} ist beschädigt.`);
+      for (const k of ['length', 'turns', 'decisions', 'crossings']) { if (t[k] === undefined) t[k] = 0; else if (!num(t[k])) throw bad(); }
+      if (t.link !== undefined && t.link !== null) {
+        if (typeof t.link !== 'object' || !num(t.link.dist) || (t.link.ll != null && !(Array.isArray(t.link.ll) && t.link.ll.every(pt)))) throw bad();
+      }
+      if (t.steps !== undefined && !t.steps.every(s => s && typeof s === 'object' && num(s.at) && (s.options === undefined || num(s.options)) && typeof s.text === 'string' && typeof s.kind === 'string')) throw bad();
       if (!t.steps) t.steps = [];
       if (typeof t.checked !== 'boolean') t.checked = false;
       if (typeof t.harder !== 'string') t.harder = '';
@@ -1570,9 +1585,10 @@ const store = {
 };
 
 // Vereinsbezogene Angaben an einer Stelle (Grundlage für den späteren Mehrvereinsbetrieb, siehe docs/architektur)
-const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946] };
+const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946], contact: '' };
+$('#privacyWho').textContent = CLUB.name + (CLUB.contact ? ', Kontakt: ' + CLUB.contact : '');
 // Versionsnummer: jede Änderung zählt um 0.1 hoch (V1.0 … V1.9, dann V2.0 …); Änderungen stehen in CHANGELOG.md
-const APP_VERSION = '1.6';
+const APP_VERSION = '1.7';
 document.getElementById('appVersion').textContent = 'V' + APP_VERSION;
 const saved = store.get();
 function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }
@@ -1869,7 +1885,7 @@ document.querySelectorAll('[data-add]').forEach(b => b.addEventListener('click',
 renderTeams();
 
 // ---------- Daten laden ----------
-const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter', 'https://overpass.private.coffee/api/interpreter', 'https://maps.mail.ru/osm/tools/overpass/api/interpreter'];
+const OVERPASS = ['https://overpass-api.de/api/interpreter', 'https://overpass.kumi.systems/api/interpreter', 'https://overpass.private.coffee/api/interpreter'];
 // Feste Wegedaten-Auszüge für die Stammorte des Vereins, mit der App ausgeliefert (tools/osm-auszug.mjs)
 let extractManifest;   // undefined: noch nicht geladen, null: keine Auszüge
 async function loadExtract(c, radius) {
@@ -2370,9 +2386,9 @@ function renderExam() {
       <div class="card-head"><span class="dot num" style="background:${COLORS[i % COLORS.length]}">${i + 1}</span>
         <span class="name">Trail ${i + 1}${esc(examPlaceSuffix(ex, t))}</span><span class="chip">${esc(t.level)}</span>
         <span class="lay">legen bis <b>${layTime(t.level)}</b></span></div>
-      <div class="stats"><span><b>${t.length}</b> m</span><span><b>${t.turns}</b> Richtungswechsel</span><span><b>${t.decisions - t.turns}</b> zusätzliche Entscheidungsstelle${t.decisions - t.turns === 1 ? '' : 'n'}</span><span><b>${t.crossings}</b> Kreuzung${t.crossings === 1 ? '' : 'en'}</span><span>Suchzeit <b>${lv.searchMin}</b> min</span></div>
+      <div class="stats"><span><b>${+t.length}</b> m</span><span><b>${+t.turns}</b> Richtungswechsel</span><span><b>${+t.decisions - +t.turns}</b> zusätzliche Entscheidungsstelle${t.decisions - t.turns === 1 ? '' : 'n'}</span><span><b>${+t.crossings}</b> Kreuzung${t.crossings === 1 ? '' : 'en'}</span><span>Suchzeit <b>${lv.searchMin}</b> min</span></div>
       <div class="streets"></div>
-      ${t.link === undefined ? '' : `<div class="streets">${t.link === null ? 'Beginn der Kette' : t.link.gap ? `<b style="color:var(--warn)">Lücke:</b> neuer Abschnitt, ${t.link.dist} m Luftlinie vom vorigen Ziel` : `Weg vom vorigen Ziel: <b>${t.link.dist} m</b>`}</div>`}
+      ${t.link === undefined ? '' : `<div class="streets">${t.link === null ? 'Beginn der Kette' : t.link.gap ? `<b style="color:var(--warn)">Lücke:</b> neuer Abschnitt, ${+t.link.dist} m Luftlinie vom vorigen Ziel` : `Weg vom vorigen Ziel: <b>${+t.link.dist} m</b>`}</div>`}
       ${t.harder ? `<div class="warnbox"><b>Hinweis:</b> ${esc(t.harder)}. PO-konform und zulässig; an diesen Stellen könnte der Hund anders abbiegen. Beim Abfahren ansehen.</div>` : ''}
       <details class="checks steps-box"><summary>Trailverlauf: ${t.steps.length} Schritte</summary><ol class="steps"></ol></details>
       <label class="check exam-check"><input type="checkbox"${t.checked ? ' checked' : ''}> geprüft (abgefahren)</label>
@@ -2381,7 +2397,7 @@ function renderExam() {
     const ol = card.querySelector('ol');
     t.steps.forEach(s => {
       const li = document.createElement('li'); li.className = s.kind;
-      li.innerHTML = `<span class="m">${s.at} m</span><span class="t"></span>`;
+      li.innerHTML = `<span class="m">${+s.at} m</span><span class="t"></span>`;
       li.querySelector('.t').textContent = s.text;
       if (s.options) { const o = document.createElement('span'); o.className = 'opts'; o.textContent = ` · ${s.options} Möglichkeiten`; li.querySelector('.t').append(o); }
       ol.append(li);
@@ -2583,7 +2599,7 @@ function renderResults() {
     const ol = card.querySelector('ol');
     steps.forEach(s => {
       const li = document.createElement('li'); li.className = s.kind;
-      li.innerHTML = `<span class="m">${s.at} m</span><span class="t"></span>`;
+      li.innerHTML = `<span class="m">${+s.at} m</span><span class="t"></span>`;
       li.querySelector('.t').textContent = s.text;
       if (s.options) { const o = document.createElement('span'); o.className = 'opts'; o.textContent = ` · ${s.options} Möglichkeiten`; li.querySelector('.t').append(o); }
       ol.append(li);

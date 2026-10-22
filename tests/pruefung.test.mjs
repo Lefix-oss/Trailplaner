@@ -78,6 +78,22 @@ test('parseExam lehnt Trails mit kaputten Feldern ab', () => {
   assert.throws(() => Pruefung.parseExam(JSON.stringify({ format: 'trailplaner-pruefung', version: 1, center: { lat: 'x' }, trails: [ok] })), /beschädigt/);
 });
 
+test('parseExam lehnt Zahlenfelder mit Text oder HTML ab (werden später in die Seite geschrieben)', () => {
+  const file = trail => JSON.stringify({ format: 'trailplaner-pruefung', version: 1, center: { lat: 49.6, lon: 9.9 }, trails: [trail] });
+  const ok = { level: 'MT-I', ll: [[49.6, 9.9], [49.61, 9.91]], steps: [{ at: 10, kind: 'turn', text: 'links', options: 2 }], length: 300, turns: 1, decisions: 1, crossings: 0, link: { dist: 120, gap: false, ll: [[49.6, 9.9], [49.601, 9.9]] } };
+  assert.doesNotThrow(() => Pruefung.parseExam(file(ok)));
+  const evil = '<img src=x onerror=alert(1)>';
+  for (const k of ['length', 'turns', 'decisions', 'crossings']) assert.throws(() => Pruefung.parseExam(file({ ...ok, [k]: evil })), /Trail 1 ist beschädigt/, k);
+  assert.throws(() => Pruefung.parseExam(file({ ...ok, link: { dist: evil, gap: false } })), /Trail 1 ist beschädigt/);
+  assert.throws(() => Pruefung.parseExam(file({ ...ok, link: 'x' })), /Trail 1 ist beschädigt/);
+  assert.throws(() => Pruefung.parseExam(file({ ...ok, link: { dist: 1, ll: [evil] } })), /Trail 1 ist beschädigt/);
+  assert.throws(() => Pruefung.parseExam(file({ ...ok, steps: [{ at: evil, kind: 'turn', text: 'x' }] })), /Trail 1 ist beschädigt/);
+  assert.throws(() => Pruefung.parseExam(file({ ...ok, steps: [{ at: 1, kind: 'turn', text: 'x', options: evil }] })), /Trail 1 ist beschädigt/);
+  assert.throws(() => Pruefung.parseExam(file({ ...ok, steps: [null] })), /Trail 1 ist beschädigt/);
+  assert.throws(() => Pruefung.parseExam(file({ ...ok, steps: [{ at: 1, kind: 'turn', text: { a: 1 } }] })), /Trail 1 ist beschädigt/);
+  assert.equal(Pruefung.parseExam(file({ level: 'MT-I', ll: ok.ll })).trails[0].length, 0);   // ältere Dateien ohne Kennzahlen bleiben lesbar
+});
+
 test('parseExam setzt fehlenden Schwierigkeitshinweis auf leer', () => {
   const ex = Pruefung.parseExam('{"format":"trailplaner-pruefung","version":1,"trails":[{"level":"MT-I","ll":[[1,2],[1,3]]}]}');
   assert.equal(ex.trails[0].harder, '');
