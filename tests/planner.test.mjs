@@ -199,6 +199,103 @@ test('chain: Reihenfolge MT-I vor MT-II, Teams in Kettenreihenfolge', () => {
   assert.deepEqual(r.index, [1, 0]);
 });
 
+// ---------- Ersetzen in der Kette ----------
+const air = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+const last = pts => pts[pts.length - 1];
+function chained() {
+  const osm = wideOSM();
+  const G = Planner.buildGraph(osm, osm.center, 1200);
+  Planner.setTerrain(G, 'ort', true, true);
+  const W = Planner.walkGraph(G);
+  const pools = { 'MT-I': Planner.pool(G, 'MT-I', Planner.rng(4), { want: 40, maxTries: 3000, mode: 'pruefung' }) };
+  const r = Planner.chain(G, W, [{ level: 'MT-I' }, { level: 'MT-I' }, { level: 'MT-I' }], pools, Planner.rng(4), 30, { ms: 3000 });
+  assert.equal(r.gaps, 0);
+  const isOld = old => c => Math.abs(c.v.length - old.v.length) < 5 && air(c.v.pts[0], old.v.pts[0]) < 5;
+  return { G, W, r, base: pools['MT-I'].list, isOld };
+}
+
+test('reverseTrail: gleicher Weg in Gegenrichtung, weiterhin PO-konform', () => {
+  const { G, r } = chained();
+  const c = r.order[0], rev = Planner.reverseTrail(G, c.tr);
+  const v = Planner.validate(G, { ...rev, mode: 'pruefung' });
+  assert.ok(v.ok);
+  assert.ok(Math.abs(v.length - c.v.length) < 1);
+  assert.ok(air(v.pts[0], last(c.v.pts)) < 1 && air(last(v.pts), c.v.pts[0]) < 1);
+});
+
+test('pool rückwärts: Trails enden auf den vorgegebenen Wegen', () => {
+  const { G, r } = chained();
+  const p = r.order[1].v.pts[0];
+  const starts = G._starts['MT-I'].filter(sg => sg.pts.some(q => air(q, p) <= 250));
+  const res = Planner.pool(G, 'MT-I', Planner.rng(3), { want: 10, maxTries: 800, mode: 'pruefung', starts, reverse: true, searchSteps: 20000 });
+  assert.ok(res.list.length > 0);
+  const ids = new Set(starts.map(s => s.id));
+  for (const c of res.list) assert.ok(c.v.ok && ids.has(c.tr.legs[c.tr.legs.length - 1].seg));
+});
+
+test('replacement am Kettenanfang: Ersatz endet in Fußweite vor dem nächsten Start', () => {
+  const { G, W, r, base, isOld } = chained();
+  // Trail 2 als Anfang eines Abschnitts (im kleinen Raster bleibt für Trail 1 kein anderer Platz)
+  const [a, b, c] = r.order;
+  const res = Planner.replacement(G, W, 'MT-I', Planner.rng(1), {
+    base: [], minDist: 30, prevEnd: null, nextStart: c.v.pts[0], later: [c.v.pts], earlier: [], obstacles: [a, c], isOld: isOld(b),
+  });
+  assert.ok(res && res.full, 'kein lückenloser Ersatz');
+  assert.ok(res.cand.id.startsWith('rück:'), 'Ersatz stammt aus der Rückwärtssuche');
+  assert.ok(!isOld(b)(res.cand));
+  assert.equal(res.lin, null);
+  assert.ok(res.lout.dist >= 75 && res.lout.dist <= 250, `Fußweg ${res.lout.dist}`);
+  assert.ok(air(last(res.cand.v.pts), c.v.pts[0]) >= 75);
+});
+
+test('replacement in der Mitte: Übergänge zum vorigen Ziel und zum nächsten Start', () => {
+  const { G, W, r, base, isOld } = chained();
+  const [a, b, c] = r.order;
+  const res = Planner.replacement(G, W, 'MT-I', Planner.rng(7), {
+    base, minDist: 30, prevEnd: last(a.v.pts), nextStart: c.v.pts[0], later: [c.v.pts], earlier: [], obstacles: [a, c], isOld: isOld(b),
+  });
+  assert.ok(res && res.full, 'kein lückenloser Ersatz');
+  assert.ok(!isOld(b)(res.cand));
+  for (const w of [res.lin, res.lout]) assert.ok(w.dist >= 75 && w.dist <= 250, `Fußweg ${w.dist}`);
+  assert.ok(air(last(a.v.pts), res.cand.v.pts[0]) >= 75 && air(last(res.cand.v.pts), c.v.pts[0]) >= 75);
+});
+
+test('replacement ohne passenden Übergang: Ersatz mit Lücke statt gar keinem', () => {
+  const { G, W, r, base, isOld } = chained();
+  const [a, b, c] = r.order;
+  const res = Planner.replacement(G, W, 'MT-I', Planner.rng(7), {
+    base, minDist: 30, maxLen: 10, prevEnd: last(a.v.pts), nextStart: c.v.pts[0], later: [c.v.pts], earlier: [], obstacles: [a, c], isOld: isOld(b),
+  });
+  assert.ok(res && res.cand && !res.full);
+  assert.equal(res.lin, null);
+  assert.equal(res.lout, null);
+});
+
+test('replacement: bestehende Lücken müssen sich nicht schließen, dürfen aber', () => {
+  const { G, W, r, base, isOld } = chained();
+  const [a, b, c] = r.order;
+  const o = { base, minDist: 30, prevEnd: last(a.v.pts), nextStart: c.v.pts[0], prevKeep: false, nextKeep: false, later: [c.v.pts], earlier: [], obstacles: [a, c], isOld: isOld(b) };
+  const none = Planner.replacement(G, W, 'MT-I', Planner.rng(7), { ...o, maxLen: 10 });
+  assert.ok(none.full, 'ohne neue Lücke gilt der Ersatz als passend');
+  const closed = Planner.replacement(G, W, 'MT-I', Planner.rng(7), o);
+  assert.ok(closed.full && closed.lin && closed.lout, 'Lücken schließen sich, wenn es geht');
+});
+
+test('similar: verschobener Start gilt als derselbe Trail, anderer Verlauf nicht', () => {
+  const a = [[0, 0], [200, 0], [200, 100]];
+  assert.ok(Planner.similar([[12, 0], [200, 0], [200, 112]], a));
+  assert.ok(!Planner.similar([[0, 0], [0, 200], [100, 200]], a));
+});
+
+test('replacement: bereits gezeigte Trails kommen zuletzt', () => {
+  const { G, W, r, base, isOld } = chained();
+  const [a, b, c] = r.order;
+  const o = { base, minDist: 30, prevEnd: null, nextStart: null, later: [], earlier: [], obstacles: [b, c], isOld: isOld(a) };
+  const first = Planner.replacement(G, W, 'MT-I', Planner.rng(7), o).cand;
+  const second = Planner.replacement(G, W, 'MT-I', Planner.rng(7), { ...o, seen: x => isOld(first)(x) }).cand;
+  assert.ok(!isOld(first)(second));
+});
+
 test('Kreisverkehr: in der Prüfung ausgeschlossen, im Training erlaubt', () => {
   const G = Planner.buildGraph(gridOSM({ kreisel: true }), CENTER, 1200);
   Planner.setTerrain(G, 'ort', false, true);

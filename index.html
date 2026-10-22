@@ -1003,6 +1003,7 @@ const Planner = (() => {
     const out = [];
     let exactFound = 0;
     const consider = tr => {
+      if (opts.reverse) tr = reverseTrail(G, tr);   // rückwärts gewürfelt: endet dort, wo die Suche begann
       tr.mode = mode;
       const v = validate(G, tr);
       if (!v.ok) { for (const c of v.checks) if (!c.ok) fail(c.label); return; }
@@ -1043,6 +1044,14 @@ const Planner = (() => {
     }
     out.sort((a, b) => a.v.excess - b.v.excess || b.score - a.score);
     return { list: out, reasons, exactFound };
+  }
+
+  // Derselbe Weg in Gegenrichtung; danach wird er wie jeder Trail komplett neu geprüft
+  function reverseTrail(G, tr) {
+    return { level: tr.level, length: tr.length, legs: tr.legs.slice().reverse().map(l => {
+      const L = G.segs[l.seg].len;
+      return { seg: l.seg, fwd: !l.fwd, d0: L - l.d1, d1: L - l.d0 };
+    }) };
   }
 
   // Tiefensuche über alle Startpunkte (gemischt) und alle erlaubten Abzweige innerhalb der Grenzen
@@ -1299,6 +1308,61 @@ const Planner = (() => {
     return p.plans.length ? result(p.plans[0], new Array(n).fill(null), n - 1) : result([], [], 0);
   }
 
+  // Ersatz für einen Trail in einer Kette. prevEnd: Ziel des vorigen Trails, nextStart: Start des nächsten (je null = keiner),
+  // later: Punkte aller später gelaufenen Trails dieses Orts (later[0] = nächster), earlier: frühere Fußwege, obstacles: alle anderen Trails.
+  // Gesucht wird vorwärts ab dem vorigen Ziel und rückwärts ab dem nächsten Start, dazu im allgemeinen Vorrat (base).
+  // prevKeep/nextKeep = false: dort ist bisher eine Lücke; schließt sie sich, umso besser, Pflicht ist es nicht.
+  // Ergebnis: { cand, lin, lout, full } – full: alle bisherigen Fußwege bleiben; sonst der Ersatz mit den wenigsten Lücken; null: gar keiner
+  function replacement(G, W, level, R, o) {
+    const minLen = o.minLen ?? 75, maxLen = o.maxLen ?? 250, minAir = o.minAir ?? 75, minDist = o.minDist, mode = o.mode || 'pruefung';
+    if (!G._starts) prepare(G);
+    const endPt = c => c.v.pts[c.v.pts.length - 1];
+    const near = (p, reverse, tag) => {
+      const starts = (G._starts[level] || []).filter(sg => sg.pts.some(q => dist(q, p) <= maxLen));
+      if (!starts.length) return [];
+      const r = pool(G, level, R, { want: o.want || 30, maxTries: 800, mode, starts, reverse, searchSteps: 20000 });
+      r.list.forEach(c => { c.id = tag + ':' + c.id; });
+      return r.list;
+    };
+    const cands = [...(o.prevEnd ? near(o.prevEnd, false, 'vor') : []), ...(o.nextStart ? near(o.nextStart, true, 'rück') : []), ...(o.base || [])];
+    const fits = cands.filter(c => !(o.isOld && o.isOld(c)) && (o.obstacles || []).every(x => compatible(c, x, minDist))
+      && (o.earlier || []).every(x => compatible(c, x, minDist)));   // frühere Fußwege dürfen den Ersatz nicht berühren
+    if (!fits.length) return null;
+    // Punkte: bisheriger Fußweg bleibt = 2, Lücke schließt sich = 1
+    const wIn = o.prevEnd ? (o.prevKeep === false ? 1 : 2) : 0, wOut = o.nextStart ? (o.nextKeep === false ? 1 : 2) : 0;
+    const max = wIn + wOut, keep = (wIn === 2 ? 2 : 0) + (wOut === 2 ? 2 : 0);
+    // Luftlinie 75–250 m ist Voraussetzung für einen Übergang; danach sortiert, bereits gezeigte Trails zuletzt
+    const airOk = (a, b) => { const d = dist(a, b); return d >= minAir && d <= maxLen; };
+    const inOk = c => !o.prevEnd || airOk(o.prevEnd, c.v.pts[0]);
+    const outOk = c => !o.nextStart || airOk(endPt(c), o.nextStart);
+    const seen = o.seen || (() => false);
+    const ordered = fits.map((c, k) => ({ c, k, p: (inOk(c) ? wIn : 0) + (outOk(c) ? wOut : 0), s: seen(c) ? 1 : 0 }))
+      .sort((a, b) => b.p - a.p || a.s - b.s || a.c.v.excess - b.c.v.excess || a.k - b.k);
+    // Fußweg zum Ersatz meidet alle späteren Trails und den Ersatz selbst (außer an seinem Start); Fußweg zum nächsten Start meidet die Trails danach
+    const later = (o.later || []).map(pts => blockedEdges(W, pts, minDist));
+    const blockOut = o.nextStart ? [blockedEdges(W, o.later[0], minDist, o.nextStart, 20), ...later.slice(1)] : [];
+    const ok = w => (w && w.dist >= minLen ? w : null);
+    let best = null, bestN = -1;
+    for (const { c, p } of ordered) {
+      if (p <= bestN) break;   // sortiert: kein späterer Kandidat schafft mehr
+      const lin = o.prevEnd && inOk(c) ? ok(walkPath(G, W, o.prevEnd, c.v.pts[0], [blockedEdges(W, c.v.pts, minDist, c.v.pts[0], 20), ...later], maxLen)) : null;
+      const lout = o.nextStart && outOk(c) ? ok(walkPath(G, W, endPt(c), o.nextStart, blockOut, maxLen)) : null;
+      const got = (lin ? wIn : 0) + (lout ? wOut : 0);
+      if (got > bestN) { best = { cand: c, lin, lout }; bestN = got; }
+      if (got === max) break;
+    }
+    const kept = (best.lin && wIn === 2 ? 2 : 0) + (best.lout && wOut === 2 ? 2 : 0);
+    return { ...best, full: kept === keep };
+  }
+
+  // Praktisch derselbe Trail: der Großteil von a liegt auf b (z. B. nur der Start um ein paar Meter verschoben)
+  function similar(a, b, tol = 15, share = 0.6) {
+    const smp = samples(a);
+    let hit = 0;
+    for (const p of smp) for (let k = 1; k < b.length; k++) if (segPointDist(p, b[k - 1], b[k]) <= tol) { hit++; break; }
+    return hit >= smp.length * share;
+  }
+
   function setTerrain(G, mode, allowPaths = false, avoidLoops = true, strict = false) { G.terrain = TERRAIN[mode] !== undefined ? mode : 'ort'; G.allowPaths = !!allowPaths; G.avoidLoops = avoidLoops !== false; G.strict = !!strict; prepare(G); }
   function segOk(G, lvl, s) {
     if (!lvl.allowed.includes(s.cls)) return false;
@@ -1307,7 +1371,7 @@ const Planner = (() => {
     if (s.blocked) return false;
     return true;
   }
-  return { LEVELS, buildGraph, prepare, setTerrain, pool, plans, alternatives, walkGraph, blockedEdges, walkPath, chain, snapEdge, validate, describe, endpointNames, toGPX, rng, trailPts, compatible };
+  return { LEVELS, buildGraph, prepare, setTerrain, pool, plans, alternatives, walkGraph, blockedEdges, walkPath, chain, replacement, reverseTrail, similar, snapEdge, validate, describe, endpointNames, toGPX, rng, trailPts, compatible };
 })();
 if (typeof module !== 'undefined') module.exports = Planner;
 
@@ -1508,7 +1572,7 @@ const store = {
 // Vereinsbezogene Angaben an einer Stelle (Grundlage für den späteren Mehrvereinsbetrieb, siehe docs/architektur)
 const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946] };
 // Versionsnummer: jede Änderung zählt um 0.1 hoch (V1.0 … V1.9, dann V2.0 …); Änderungen stehen in CHANGELOG.md
-const APP_VERSION = '1.5';
+const APP_VERSION = '1.6';
 document.getElementById('appVersion').textContent = 'V' + APP_VERSION;
 const saved = store.get();
 function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }
@@ -2216,63 +2280,47 @@ async function replaceTrail(i, btn) {
       state.examPools[pk] = pool;
     }
     const obstacles = ex.trails.filter((_, k) => k !== i).map(t => Pruefung.obstacle(t, G.fromLatLon));
-    const oldStart = G.fromLatLon(old.ll[0]);
-    const isOld = c => Math.abs(c.v.length - old.length) < 5 && Math.hypot(c.v.pts[0][0] - oldStart[0], c.v.pts[0][1] - oldStart[1]) < 5;
-    // Kette: Ersatz muss den Übergang vom vorigen Ziel und zum nächsten Start einhalten (75–250 m Fußweg, 75 m Luftlinie,
-    // Fußwege meiden spätere Trails); frühere Fußwege dürfen den Ersatz nicht berühren
+    const oldPts = old.ll.map(G.fromLatLon);
+    const isOld = c => Planner.similar(c.v.pts, oldPts);   // auch kein fast gleicher Trail mit leicht verschobenem Start
+    // Kette: Ersatz soll den Übergang vom vorigen Ziel und zum nächsten Start einhalten (75–250 m Fußweg, 75 m Luftlinie,
+    // Fußwege meiden spätere Trails); eine bisherige Lücke darf sich dabei schließen
     const same = t => t && t.place === old.place;
-    const prevT = i > 0 && same(ex.trails[i - 1]) && old.link && !old.link.gap ? ex.trails[i - 1] : null;
-    const nextT = same(ex.trails[i + 1]) && ex.trails[i + 1].link && !ex.trails[i + 1].link.gap ? ex.trails[i + 1] : null;
-    let cands = state.examPools[pk].list;
-    if (prevT) {
-      const pe = G.fromLatLon(prevT.ll[prevT.ll.length - 1]);
-      Planner.prepare(G);
-      const starts = (G._starts[lv] || []).filter(sg => sg.pts.some(p => Math.hypot(p[0] - pe[0], p[1] - pe[1]) <= 250));
-      if (starts.length) {
-        const near = Planner.pool(G, lv, Planner.rng(Date.now() % 1000003), { want: 30, maxTries: 800, mode: 'pruefung', starts, searchSteps: 20000 });
-        near.list.forEach((c, k) => { c.G = G; c.place = place.id; c.id = 'nah' + k + ':' + c.id; });
-        cands = near.list.concat(cands);
-      }
-    }
+    const prevT = i > 0 && same(ex.trails[i - 1]) && old.link ? ex.trails[i - 1] : null;
+    const nextT = same(ex.trails[i + 1]) && ex.trails[i + 1].link ? ex.trails[i + 1] : null;
     const W = G._walk || (G._walk = Planner.walkGraph(G));
-    const pts = t => t.ll.map(G.fromLatLon);
-    const after = ex.trails.slice(i + 1).filter(same), after2 = ex.trails.slice(i + 2).filter(same);
-    const blockAfter = after.map(t => Planner.blockedEdges(W, pts(t), s.minDist)), blockAfter2 = blockAfter.slice(1);
-    const blockNext = nextT ? Planner.blockedEdges(W, pts(nextT), s.minDist, G.fromLatLon(nextT.ll[0]), 20) : null;
-    const earlierWalks = ex.trails.slice(0, i).filter(t => same(t) && t.link && t.link.ll).map(t => Pruefung.obstacle({ ll: t.link.ll }, G.fromLatLon));
-    function chainFit(c) {
-      if (!earlierWalks.every(o => Planner.compatible(c, o, s.minDist))) return null;
-      const st = c.v.pts[0], en = c.v.pts[c.v.pts.length - 1];
-      let lin = null, lout = null;
-      if (prevT) {
-        const pe = G.fromLatLon(prevT.ll[prevT.ll.length - 1]);
-        if (Math.hypot(pe[0] - st[0], pe[1] - st[1]) < 75) return null;
-        lin = Planner.walkPath(G, W, pe, st, [Planner.blockedEdges(W, c.v.pts, s.minDist, st, 20), ...blockAfter], 250);
-        if (!lin || lin.dist < 75) return null;
-      }
-      if (nextT) {
-        const ns = G.fromLatLon(nextT.ll[0]);
-        if (Math.hypot(en[0] - ns[0], en[1] - ns[1]) < 75) return null;
-        lout = Planner.walkPath(G, W, en, ns, [blockNext, ...blockAfter2], 250);
-        if (!lout || lout.dist < 75) return null;
-      }
-      return { lin, lout };
-    }
-    const fits = cands.filter(c => !isOld(c) && obstacles.every(o => Planner.compatible(c, o, s.minDist)));
-    if (!fits.length) { setStatus(`Für Trail ${i + 1} habe ich keinen Ersatz gefunden, der zu den anderen Trails passt. Trail ${i + 1} bleibt unverändert.`, true); return; }
+    const pts = t => t.ll.map(G.fromLatLon), endOf = p => p[p.length - 1];
+    const air = (a, b) => Math.round(Math.hypot(a[0] - b[0], a[1] - b[1]));
+    // Bereits gezeigte Trails (auch der bisherige) am Verlauf erkennen, damit mehrfaches Ersetzen nicht hin- und herspringt
     const seen = state.examSeen[i] || (state.examSeen[i] = new Set());
-    const ordered = fits.filter(c => !seen.has(c.id)).concat(fits.filter(c => seen.has(c.id)));
-    let next = null, fit = null;
-    for (const c of ordered) { fit = chainFit(c); if (fit) { next = c; break; } }
-    if (!next) { setStatus(`Für Trail ${i + 1} habe ich keinen Ersatz gefunden, der in die Kette passt (75–250 m Fußweg zum vorigen Ziel und zum nächsten Start). Trail ${i + 1} bleibt unverändert.`, true); return; }
-    if (!fits.some(c => !seen.has(c.id))) seen.clear();
-    seen.add(next.id);
-    next.link = old.link === undefined ? undefined : fit.lin ? { dist: fit.lin.dist, gap: false, pts: fit.lin.pts }
-      : i > 0 && same(ex.trails[i - 1]) ? (() => { const pe = G.fromLatLon(ex.trails[i - 1].ll[ex.trails[i - 1].ll.length - 1]); return { gap: true, dist: Math.hypot(pe[0] - next.v.pts[0][0], pe[1] - next.v.pts[0][1]) }; })() : null;
+    seen.add(old.ll);
+    const seenPts = [...seen].map(ll => ll.map(G.fromLatLon));
+    const wasSeen = c => seenPts.some(p => Planner.similar(c.v.pts, p));
+    const res = Planner.replacement(G, W, lv, Planner.rng(Date.now() % 1000003), {
+      base: state.examPools[pk].list, minDist: s.minDist, mode: 'pruefung', obstacles, isOld, seen: wasSeen,
+      prevEnd: prevT ? G.fromLatLon(endOf(prevT.ll)) : null, nextStart: nextT ? G.fromLatLon(nextT.ll[0]) : null,
+      prevKeep: !!prevT && !old.link.gap, nextKeep: !!nextT && !nextT.link.gap,
+      later: ex.trails.slice(i + 1).filter(same).map(pts),
+      earlier: ex.trails.slice(0, i).filter(t => same(t) && t.link && t.link.ll).map(t => Pruefung.obstacle({ ll: t.link.ll }, G.fromLatLon)),
+    });
+    if (!res) { setStatus(`Für Trail ${i + 1} habe ich keinen Ersatz gefunden, der zu den anderen Trails passt. Trail ${i + 1} bleibt unverändert.`, true); return; }
+    // nur neue Lücken zählen: dort war bisher ein Fußweg
+    const gapIn = !!prevT && !old.link.gap && !res.lin, gapOut = !!nextT && !nextT.link.gap && !res.lout;
+    const where = [gapIn && `vor Trail ${i + 1}`, gapOut && `nach Trail ${i + 1}`].filter(Boolean).join(' und ');
+    if (!res.full && !confirm(`Kein Ersatz passt lückenlos in die Kette (75–250 m Fußweg zum vorigen Ziel und zum nächsten Start).\n\nTrotzdem einen Ersatz einsetzen? Die Kette ist dann ${where} unterbrochen.`)) {
+      setStatus(`Trail ${i + 1} bleibt unverändert.`); return;
+    }
+    const next = res.cand;
+    next.G = G; next.place = place.id;
+    if (wasSeen(next)) seen.clear();   // alle Vorschläge schon gezeigt: von vorn beginnen
+    next.link = old.link === undefined ? undefined : res.lin ? { dist: res.lin.dist, gap: false, pts: res.lin.pts }
+      : prevT ? { gap: true, dist: air(G.fromLatLon(endOf(prevT.ll)), next.v.pts[0]) } : null;
     ex.trails[i] = snapshot(next);
-    if (fit.lout) ex.trails[i + 1].link = { dist: Math.round(fit.lout.dist), gap: false, ll: fit.lout.pts.map(p => G.toLatLon(p)) };
+    seen.add(ex.trails[i].ll);
+    // Übergang zum nächsten Trail: neuer Fußweg oder Lücke mit der neuen Luftlinie
+    if (nextT) ex.trails[i + 1].link = res.lout ? { dist: Math.round(res.lout.dist), gap: false, ll: res.lout.pts.map(p => G.toLatLon(p)) }
+      : { gap: true, dist: air(endOf(next.v.pts), G.fromLatLon(nextT.ll[0])), ll: null };
     persistExam(); renderExam();
-    setStatus(`Trail ${i + 1} ersetzt (${ex.trails[i].length} m).${ex.trails[i].harder ? ` Hinweis: ${ex.trails[i].harder}.` : ''} Bitte abfahren und danach abhaken.`);
+    setStatus(`Trail ${i + 1} ersetzt (${ex.trails[i].length} m).${where ? ` Kette ${where} unterbrochen.` : ''}${ex.trails[i].harder ? ` Hinweis: ${ex.trails[i].harder}.` : ''} Bitte abfahren und danach abhaken.`);
   } catch (e) {
     console.error(e);
     setStatus(`Interner Fehler beim Ersetzen: ${e && e.message ? e.message : e}. Trail ${i + 1} bleibt unverändert.`, true);

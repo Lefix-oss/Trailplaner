@@ -2,6 +2,15 @@
 
 Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Die aktuelle Version steht in der App neben der Überschrift.
 
+## V1.6 – 22.10.2026
+
+- **Ersetzen in der Kette findet öfter einen Ersatz:** Der Planer sucht jetzt auch rückwärts. Er würfelt Trails, die am Start des nächsten Trails beginnen, dreht sie um und prüft sie komplett neu gegen die PO. So enden sie in Fußweite vor dem nächsten Start. Das hilft vor allem am Anfang und in der Mitte einer Kette.
+- **Mitte der Kette:** Gesucht wird vorwärts vom vorigen Ziel und rückwärts vom nächsten Start. Bei gleich guter Kette gewinnt der Trail mit weniger zusätzlichen Entscheidungsstellen.
+- **Bestehende Lücken** neben dem ersetzten Trail schließen sich, wenn es passt.
+- **Passt kein Ersatz lückenlos:** Die App fragt nach und setzt auf Wunsch einen Ersatz mit Lücke ein. Bisher blieb der Trail dann unverändert. Die Statuszeile sagt, wo die Kette unterbrochen ist.
+- **Mehrfaches Ersetzen:** Es kommt nicht mehr fast derselbe Trail mit ein paar Metern verschobenem Start. Schon gezeigte Trails kommen erst wieder, wenn es keine anderen mehr gibt.
+- **Lücke zum nächsten Trail:** Die angezeigte Luftlinie wird nach dem Ersetzen neu berechnet.
+
 ## V1.5 – 22.10.2026
 
 - **Keine Kreisverkehre in Prüfungen:** Im Prüfungsmodus führt kein Trail mehr durch einen Kreisverkehr, weil das im Zweifel zu schwer ist (Vereinsvorgabe). Im Training bleiben Kreisverkehre erlaubt. Erkannt werden alle Wege, die in OpenStreetMap als Kreisverkehr eingetragen sind.
