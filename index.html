@@ -1316,13 +1316,17 @@ const Planner = (() => {
   function chain(G, W, teams, pools, R, minDist, opts = {}) {
     const minLen = opts.minLen ?? 75, maxLen = opts.maxLen ?? 250, minAir = opts.minAir ?? 75;
     const sliceMs = opts.ms ?? 1500, K = opts.k ?? 8, maxBudget = opts.maxGaps ?? 3, mode = opts.mode || 'pruefung', obstacles = opts.obstacles || [];
-    // fixed (GPX-Import): die Trails stehen fest, es wird nur geordnet: nichts würfeln, nichts aussortieren, Konflikte untereinander nur dulden
-    const fixed = !!opts.fixed;
     const seq = teams.map((t, i) => ({ t, i })).sort((a, b) => LEVEL_ORDER.indexOf(a.t.level) - LEVEL_ORDER.indexOf(b.t.level) || a.i - b.i);
     const n = seq.length;
     const result = (order, links, gaps) => ({ order, links, gaps, teams: seq.map(x => x.t), index: seq.map(x => x.i) });
     if (!n) return result([], [], 0);
     if (!G._starts) prepare(G);
+    // Feste Trails (GPX-Import): nichts würfeln, nichts aussortieren, nur die beste Reihenfolge bestimmen
+    if (opts.fixed) {
+      const cands = LEVEL_ORDER.filter(lv => seq.some(x => x.t.level === lv)).flatMap(lv => (pools[lv] ? pools[lv].list : []));
+      const r = orderFixed(G, W, cands, minDist, opts);
+      return result(r.order, r.links, r.gaps);
+    }
     const memo = f => { const m = new Map(); return (...k) => { const key = k.map(x => (x && x.id) || x).join('|'); if (!m.has(key)) m.set(key, f(...k)); return m.get(key); }; };
     const bStart = memo(c => blockedEdges(W, c.v.pts, minDist, c.v.pts[0], 20));
     const endPt = c => c.v.pts[c.v.pts.length - 1];
@@ -1343,7 +1347,6 @@ const Planner = (() => {
     let uid = 0;
     // Kandidaten der Stufe lv, die in Fußweite (ohne Sperren) hinter dem Ziel von prev starten, mit ihrem Fußweg
     const nearList = memo((prev, lv) => {
-      if (fixed) return [];
       const segIds = reach(endPt(prev));
       const starts = G._starts[lv].filter(sg => segIds.has(sg.id));
       if (!starts.length) return [];
@@ -1358,7 +1361,7 @@ const Planner = (() => {
       }
       return out;
     });
-    const general = seq.map(x => (pools[x.t.level] ? pools[x.t.level].list : []).slice(0, fixed ? undefined : 25));
+    const general = seq.map(x => (pools[x.t.level] ? pools[x.t.level].list : []).slice(0, 25));
     // Abstand zwischen einem Fußweg und einem Trail (Polylinien)
     function walkClear(wpts, c) {
       for (let i = 1; i < wpts.length; i++) for (let k = 1; k < c.v.pts.length; k++) if (segSegDist(wpts[i - 1], wpts[i], c.v.pts[k - 1], c.v.pts[k]) < minDist) return false;
@@ -1375,14 +1378,14 @@ const Planner = (() => {
         if (pos === n) { best = result(chosen.slice(), walks.slice(), gaps); return; }
         const lv = seq[pos].t.level;
         const near = pos > 0 ? nearList(chosen[pos - 1], lv) : [];
-        const options = pos === 0 || fixed ? general[pos] : (gaps < budget ? near.concat(general[pos]) : near);
+        const options = pos === 0 ? general[pos] : (gaps < budget ? near.concat(general[pos]) : near);
         for (const c of options) {
           if (best || stop) return;
-          if (chosen.some(o => o === c || (!fixed && !compatible(c, o, minDist)))) continue;
+          if (chosen.some(o => o === c || !compatible(c, o, minDist))) continue;
           // bisherige Fußwege der Gruppe dürfen diesen später gelaufenen Trail nicht berühren
           if (walks.some(w => w && !walkClear(w.pts, c))) continue;
           let w = null;
-          if (pos > 0 && (fixed || near.includes(c))) {
+          if (pos > 0 && near.includes(c)) {
             const prev = chosen[pos - 1];
             if (dist(endPt(prev), c.v.pts[0]) >= minAir) {
               const r = walkPath(G, W, endPt(prev), c.v.pts[0], [bStart(c)], maxLen);
@@ -1397,15 +1400,83 @@ const Planner = (() => {
       })(0, 0);
       if (best) return best;
     }
-    // Feste Trails: Rückfall ohne Kette, nach Stufe und Reihenfolge im Vorrat; jeder Übergang ist eine Lücke
-    if (fixed) {
-      const used = new Set();
-      const order = seq.map(x => { const c = (pools[x.t.level] ? pools[x.t.level].list : []).find(k => !used.has(k)); if (c) used.add(c); return c; }).filter(Boolean);
-      return result(order, new Array(order.length).fill(null), Math.max(0, order.length - 1));
-    }
     // Keine Kette mit wenigen Lücken: wie bisher planen, jeder Übergang ist eine Lücke
     const p = plans(G, seq.map(x => x.t), pools, R, minDist, 1);
     return p.plans.length ? result(p.plans[0], new Array(n).fill(null), n - 1) : result([], [], 0);
+  }
+
+  // Reihenfolge fester Trails (GPX-Import) mit den geringsten Übergangskosten (Lücken wiegen schwer, dann die Wege):
+  // gültiger Fußweg (75–250 m Fußweg, mind. 75 m Luftlinie, meidet den nächsten Trail außer an dessen Start) kostet seine Länge,
+  // jede Lücke 1000 m plus Luftlinie. Stufen bleiben in der Reihenfolge MT-I, MT-II, MT-III. Bis 12 Trails exakt
+  // (dynamische Programmierung über Teilmengen), darüber nächster Nachbar mit 2-opt. Danach wird jeder Fußweg
+  // mit allen später gelaufenen Trails als Sperre neu gesucht; gelingt das nicht, ist der Übergang eine Lücke.
+  // Ergebnis: { order, links, gaps } wie chain(); die Trails selbst bleiben unverändert.
+  const GAP_COST = 1000;
+  function orderFixed(G, W, cands, minDist, o = {}) {
+    const minLen = o.minLen ?? 75, maxLen = o.maxLen ?? 250, minAir = o.minAir ?? 75, n = cands.length;
+    if (!n) return { order: [], links: [], gaps: 0 };
+    const endPt = c => c.v.pts[c.v.pts.length - 1];
+    const rank = cands.map(c => LEVEL_ORDER.indexOf(c.tr.level));
+    const block = cands.map(c => blockedEdges(W, c.v.pts, minDist, c.v.pts[0], 20));
+    const link = (a, b, extra = []) => {
+      if (dist(endPt(cands[a]), cands[b].v.pts[0]) < minAir) return null;
+      const w = walkPath(G, W, endPt(cands[a]), cands[b].v.pts[0], [block[b], ...extra], maxLen);
+      return w && w.dist >= minLen ? w : null;
+    };
+    const cost = cands.map((_, a) => cands.map((_, b) => {
+      if (a === b || rank[b] < rank[a]) return Infinity;
+      const w = link(a, b);
+      return w ? w.dist : GAP_COST + dist(endPt(cands[a]), cands[b].v.pts[0]);
+    }));
+    let seq;
+    if (n <= 12) {
+      const F = 1 << n, D = new Float64Array(F * n).fill(Infinity), P = new Int8Array(F * n).fill(-1);
+      for (let i = 0; i < n; i++) D[(1 << i) * n + i] = 0;
+      for (let m = 1; m < F; m++) for (let l = 0; l < n; l++) {
+        const d = D[m * n + l]; if (d === Infinity) continue;
+        for (let j = 0; j < n; j++) {
+          if (m & (1 << j)) continue;
+          const v = d + cost[l][j], t = (m | (1 << j)) * n + j;
+          if (v < D[t]) { D[t] = v; P[t] = l; }
+        }
+      }
+      let last = 0;
+      for (let i = 1; i < n; i++) if (D[(F - 1) * n + i] < D[(F - 1) * n + last]) last = i;
+      seq = []; let m = F - 1;
+      while (last >= 0) { seq.unshift(last); const pr = P[m * n + last]; m ^= 1 << last; last = pr; }
+    } else {
+      const total = q => q.reduce((a, x, k) => (k ? a + cost[q[k - 1]][x] : 0), 0);
+      let best = null;
+      for (let st = 0; st < n; st++) {
+        if (rank[st] !== Math.min(...rank)) continue;
+        const q = [st], left = new Set(cands.keys()); left.delete(st);
+        // nächster Nachbar, aber nur innerhalb der niedrigsten noch offenen Stufe (MT-I vor MT-II vor MT-III)
+        while (left.size) {
+          const lo = Math.min(...[...left].map(j => rank[j]));
+          let nx = -1;
+          for (const j of left) if (rank[j] === lo && (nx < 0 || cost[q[q.length - 1]][j] < cost[q[q.length - 1]][nx])) nx = j;
+          q.push(nx); left.delete(nx);
+        }
+        // nachbessern: Teilstück umdrehen (2-opt) oder einen Trail an eine andere Stelle setzen, bis nichts mehr hilft
+        for (let better = true; better;) {
+          better = false;
+          for (let i = 0; i < n - 1; i++) for (let k = i + 1; k < n; k++) {
+            const r = q.slice(0, i).concat(q.slice(i, k + 1).reverse(), q.slice(k + 1));
+            if (total(r) < total(q) - 1e-6) { q.splice(0, n, ...r); better = true; }
+          }
+          for (let i = 0; i < n; i++) for (let k = 0; k < n; k++) {
+            if (i === k) continue;
+            const r = q.slice(); const [x] = r.splice(i, 1); r.splice(k, 0, x);
+            if (total(r) < total(q) - 1e-6) { q.splice(0, n, ...r); better = true; }
+          }
+        }
+        if (!best || total(q) < total(best)) best = q.slice();
+      }
+      seq = best;
+    }
+    // Fußwege der Gruppe dürfen keinen später gelaufenen Trail berühren (wie in chain)
+    const links = seq.map((x, k) => (k === 0 ? null : link(seq[k - 1], x, seq.slice(k + 1).map(y => blockedEdges(W, cands[y].v.pts, minDist)))));
+    return { order: seq.map(i => cands[i]), links, gaps: links.slice(1).filter(w => !w).length };
   }
 
   // Ersatz für einen Trail in einer Kette. prevEnd: Ziel des vorigen Trails, nextStart: Start des nächsten (je null = keiner),
@@ -1471,7 +1542,7 @@ const Planner = (() => {
     if (s.blocked) return false;
     return true;
   }
-  return { LEVELS, buildGraph, prepare, setTerrain, pool, plans, alternatives, walkGraph, blockedEdges, walkPath, chain, replacement, reverseTrail, similar, snapEdge, validate, describe, endpointNames, toGPX, rng, trailPts, compatible, levelByLength, matchTrack, trackCandidate };
+  return { LEVELS, buildGraph, prepare, setTerrain, pool, plans, alternatives, walkGraph, blockedEdges, walkPath, chain, replacement, reverseTrail, similar, snapEdge, validate, describe, endpointNames, toGPX, rng, trailPts, compatible, levelByLength, matchTrack, trackCandidate, orderFixed };
 })();
 if (typeof module !== 'undefined') module.exports = Planner;
 
@@ -1664,6 +1735,39 @@ const Pruefung = (() => {
     return best;
   }
 
+  // Ortsvorschläge für importierte Strecken ohne passenden Ort: Strecken, deren Start- oder Zielpunkte höchstens `link` m
+  // auseinander liegen, gehören zusammen. Mitte = Mitte des umgebenden Rechtecks aller Punkte, Radius = kleinster Wert aus
+  // `radii`, der alle Punkte plus `margin` umfasst. Passt kein Radius, wird nicht geraten: die Strecken landen in `unsure`.
+  // tracks: [[lat, lon], …][]; Ergebnis { groups: [{ members, center: { lat, lon }, radius }], unsure: [Index] }
+  function groupTracks(tracks, radii, o = {}) {
+    const link = o.link ?? 1000, margin = o.margin ?? 100;
+    const m = (a, b) => Math.hypot((a[0] - b[0]) * 110574, (a[1] - b[1]) * 111320 * Math.cos(a[0] * Math.PI / 180));
+    const ends = tracks.map(ll => [ll[0], ll[ll.length - 1]]);
+    const root = tracks.map((_, i) => i), find = i => (root[i] === i ? i : (root[i] = find(root[i])));
+    for (let i = 0; i < tracks.length; i++) for (let j = i + 1; j < tracks.length; j++) {
+      if (ends[i].some(a => ends[j].some(b => m(a, b) <= link))) root[find(i)] = find(j);
+    }
+    const sets = new Map();
+    tracks.forEach((_, i) => { const r = find(i); if (!sets.has(r)) sets.set(r, []); sets.get(r).push(i); });
+    const groups = [], unsure = [];
+    for (const members of sets.values()) {
+      const pts = members.flatMap(i => tracks[i]);
+      const lats = pts.map(p => p[0]), lons = pts.map(p => p[1]);
+      const c = [(Math.min(...lats) + Math.max(...lats)) / 2, (Math.min(...lons) + Math.max(...lons)) / 2];
+      const need = Math.max(...pts.map(p => m(c, p))) + margin;
+      const radius = radii.find(r => r >= need);
+      if (radius) groups.push({ members, center: { lat: c[0], lon: c[1] }, radius }); else unsure.push(...members);
+    }
+    groups.sort((a, b) => b.members.length - a.members.length || a.members[0] - b.members[0]);
+    return { groups, unsure: unsure.sort((a, b) => a - b) };
+  }
+  // Name eines Orts aus der Antwort von Nominatim /reverse; null, wenn sie keinen Ortsnamen enthält
+  function reverseName(r) {
+    const a = (r && r.address) || {};
+    const n = a.village || a.town || a.city || a.hamlet || a.suburb || a.municipality;
+    return typeof n === 'string' && n.trim() ? n.trim().slice(0, 80) : null;
+  }
+
   function serializeExam(exam) { return JSON.stringify(exam, null, 1); }
 
   function parseExam(text) {
@@ -1719,7 +1823,7 @@ const Pruefung = (() => {
     return ex;
   }
 
-  return { FORMAT, VERSION, LEVEL_KEYS, PLACE_IDS, parseNames, splitTeam, draw, setCell, obstacle, shareText, placeOf, mergePlaces, replacePlaceTrails, osmKey, osmFresh, osmBBox, findExtract, overpassQuery, placeChoices, serializeExam, parseExam, GPX_LIMITS, parseGpx, placeFor };
+  return { FORMAT, VERSION, LEVEL_KEYS, PLACE_IDS, parseNames, splitTeam, draw, setCell, obstacle, shareText, placeOf, mergePlaces, replacePlaceTrails, osmKey, osmFresh, osmBBox, findExtract, overpassQuery, placeChoices, serializeExam, parseExam, GPX_LIMITS, parseGpx, placeFor, groupTracks, reverseName };
 })();
 if (typeof module !== 'undefined') module.exports = Pruefung;
 </script>
@@ -1737,7 +1841,7 @@ const store = {
 const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946], contact: '' };
 $('#privacyWho').textContent = CLUB.name + (CLUB.contact ? ', Kontakt: ' + CLUB.contact : '');
 // Versionsnummer: jede Änderung zählt um 0.1 hoch (V1.0 … V1.9, dann V2.0 …); Änderungen stehen in CHANGELOG.md
-const APP_VERSION = '1.8';
+const APP_VERSION = '1.9';
 document.getElementById('appVersion').textContent = 'V' + APP_VERSION;
 const saved = store.get();
 function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }
@@ -2429,7 +2533,7 @@ function drawExam(fit = false, ex = state.exam) {
     const color = COLORS[i % COLORS.length], ll = t.ll;
     bounds.push(...ll);
     L.polyline(ll, { color: '#ffffff', weight: 9, opacity: 0.9 }).addTo(trailLayer);
-    L.polyline(ll, { color, weight: 5, opacity: 1 }).addTo(trailLayer).bindTooltip(`Trail ${i + 1} · ${t.level}${examPlaceSuffix(ex, t)} · ${t.length} m`, { sticky: true });
+    L.polyline(ll, { color, weight: 5, opacity: 1 }).addTo(trailLayer).bindTooltip(`Trail ${i + 1} · ${esc(t.level)}${esc(examPlaceSuffix(ex, t))} · ${+t.length} m`, { sticky: true });
     t.steps.filter(s => s.kind === 'turn').forEach(s => {
       L.marker(llAtDist(ll, s.at), { icon: L.divIcon({ className: '', html: `<div class="lf-mark lf-turn" style="background:${color}"></div>`, iconSize: [12, 12], iconAnchor: [6, 6] }), keyboard: false })
         .bindTooltip(`Trail ${i + 1}, ${s.at} m: ${s.text}`).addTo(trailLayer);
@@ -2536,31 +2640,48 @@ async function replanPlace(pid) {
 // ---------- GPX-Import ----------
 // Trails aus GPX-Dateien (z. B. Mapy.com) einlesen, prüfen, zur Kette ordnen und als Prüfungsstand übernehmen.
 // Die Linien werden nie verändert; die Zuordnung zum Wegenetz dient nur der Regelprüfung und der Wegbeschreibung.
-const imp = { items: [], order: [], info: [], conflicts: [], busy: false, drag: false };
+const imp = { items: [], order: [], info: [], conflicts: [], newPlaces: [], graphs: new Map(), busy: false };
 $('#importBtn').addEventListener('click', () => { if (!imp.busy) { imp.items.length ? showImport() : openImport(); } });
 $('#importFile').addEventListener('change', e => { const f = [...e.target.files]; e.target.value = ''; if (f.length) evaluateFiles(f); });
-function openImport() { imp.items = []; imp.order = []; imp.info = []; imp.conflicts = []; showImport(); }
+function openImport() { imp.items = []; imp.order = []; imp.info = []; imp.conflicts = []; imp.newPlaces = []; showImport(); }
 function showImport() { $('#importPanel').hidden = false; renderImport(); $('#importPanel').scrollIntoView({ block: 'nearest' }); }
 function closeImport() {
   if ($('#importPanel').hidden) return;
-  imp.items = []; imp.order = []; imp.info = []; imp.conflicts = [];
+  imp.items = []; imp.order = []; imp.info = []; imp.conflicts = []; imp.newPlaces = []; imp.graphs = new Map();
   $('#importPanel').hidden = true; $('#importPanel').innerHTML = '';
   if (planMode === 'pruefung' && state.exam) drawExam(false); else trailLayer.clearLayers();
 }
 const llDist = (a, b) => L.latLng(a).distanceTo(L.latLng(b));
 const llLength = ll => { let s = 0; for (let i = 1; i < ll.length; i++) s += llDist(ll[i - 1], ll[i]); return s; };
+// Orte für den Import: vorhandene Orte mit Mitte und die Vorschläge dieses Imports (kommen erst mit „Übernehmen“ in die Ortsliste)
+const importPlaces = () => state.places.filter(p => p.center).concat(imp.newPlaces);
+// Ortsname zu einem Punkt (Nominatim); ohne verlässlichen Namen der Kartenpunkt wie beim Tippen auf die Karte
+async function placeNameAt(c) {
+  const fallback = `Kartenpunkt ${c.lat.toFixed(4)}, ${c.lon.toFixed(4)}`;
+  const ctl = new AbortController(), timer = setTimeout(() => ctl.abort(), 8000);
+  try {
+    const r = await fetch(`https://nominatim.openstreetmap.org/reverse?format=jsonv2&zoom=14&addressdetails=1&accept-language=de&lat=${c.lat.toFixed(5)}&lon=${c.lon.toFixed(5)}`, { signal: ctl.signal });
+    if (!r.ok) return fallback;
+    return Pruefung.reverseName(await r.json()) || fallback;
+  } catch { return fallback; } finally { clearTimeout(timer); }
+}
+// Freie Kennbuchstaben: unbenutzte und solche, deren Ort noch keine Mitte hat (leerer Ort A beim Neuanfang)
+function freePlaceIds() {
+  const used = new Set(state.places.filter(p => p.center).map(p => p.id).concat(imp.newPlaces.map(p => p.id)));
+  return Pruefung.PLACE_IDS.filter(id => !used.has(id));
+}
 
 async function evaluateFiles(files) {
   if (planMode !== 'pruefung' || imp.busy) return;
   const lim = Pruefung.GPX_LIMITS;
   if (files.length > lim.files) { setStatus(`Zu viele Dateien: höchstens ${lim.files} auf einmal.`, true); return; }
   files = files.slice().sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }));
-  imp.busy = true; imp.items = []; imp.order = []; imp.info = []; imp.conflicts = [];
+  imp.busy = true; imp.items = []; imp.order = []; imp.info = []; imp.conflicts = []; imp.newPlaces = []; imp.graphs = new Map();
   $('#importPanel').hidden = false; renderImport(); setStatus('Lese GPX-Dateien …');
   try {
     const items = [];
     for (const f of files) {
-      const it = { name: f.name, route: '', ll: null, level: null, place: null, c: null, status: 'locked', reasons: [], take: false };
+      const it = { name: f.name, route: '', ll: null, level: null, place: null, c: null, status: 'locked', reasons: [], take: false, needsPlace: false };
       items.push(it);
       try {
         if (f.size > lim.bytes) throw new Error('Die Datei ist zu groß (höchstens 1 MB).');
@@ -2570,48 +2691,82 @@ async function evaluateFiles(files) {
       it.level = Planner.levelByLength(it.len);
       if (!it.level) { it.reasons.push(`Länge ${Math.round(it.len)} m passt zu keiner Stufe (MT-I 270–330 m, MT-II 540–660 m, MT-III 900–1100 m).`); continue; }
       it.place = Pruefung.placeFor(state.places, it.ll[0], it.ll[it.ll.length - 1]);
-      if (!it.place) it.reasons.push('Start und Ziel liegen nicht in einem Ort der Ortsliste: Ort hinzufügen oder Radius vergrößern.');
     }
     imp.items = items; renderImport();
+    // Trails ohne passenden Ort: nach Lage gruppieren, je Gruppe ein Ortsvorschlag (Gelände „Auch Feld und Wald“)
+    const rest = items.filter(i => i.level && !i.place);
+    if (rest.length) {
+      setStatus('Erkenne die Orte der Trails …'); await tick();
+      const g = Pruefung.groupTracks(rest.map(i => i.ll), RADII);
+      g.unsure.forEach(k => { rest[k].needsPlace = true; rest[k].reasons.push('Ort nicht eindeutig: Die Strecke passt in keinen Suchkreis. Bitte einen Ort wählen.'); });
+      for (const grp of g.groups) {
+        const id = freePlaceIds()[0];
+        if (!id) { grp.members.forEach(k => { rest[k].needsPlace = true; rest[k].reasons.push(`Ort nicht eindeutig: Es wären mehr als ${Pruefung.PLACE_IDS.length} Orte nötig. Bitte einen Ort wählen.`); }); continue; }
+        if (imp.newPlaces.length) await new Promise(r => setTimeout(r, 1100));   // Nominatim: höchstens eine Anfrage pro Sekunde
+        let name = await placeNameAt(grp.center);
+        if (state.places.some(p => p.center && placeLabel(p) === name.split(',')[0].trim())) name += ' (Import)';   // gleicher Name, aber anderer Suchkreis
+        const same = imp.newPlaces.filter(p => p.name === name || p.name.startsWith(name + ' (')).length;
+        if (same) name += ` (${same + 1})`;   // zwei Vorschläge in derselben Gemeinde unterscheidbar halten
+        const place = { id, name, center: grp.center, terrain: 'frei', radius: grp.radius, proposed: true };
+        imp.newPlaces.push(place);
+        grp.members.forEach(k => { rest[k].place = place; });
+      }
+    }
+    if (planMode !== 'pruefung' || $('#importPanel').hidden) { imp.items = []; return; }   // Modus gewechselt oder Fenster geschlossen
     // Wegenetz je Ort holen und jeden Trail zuordnen und prüfen
     const usedPlaces = [...new Set(items.filter(i => i.place).map(i => i.place))];
     radarStart(usedPlaces);
-    const graphs = new Map();
-    try { for (const p of usedPlaces) graphs.set(p.id, await graphFor(p, p.radius)); }
-    catch { setStatus('OpenStreetMap ist gerade nicht erreichbar oder überlastet. Es wurde nichts übernommen; der bisherige Stand bleibt. Bitte in einer Minute noch einmal versuchen.', true); imp.items = []; renderImport(); return; }
-    if (planMode !== 'pruefung' || $('#importPanel').hidden) { imp.items = []; return; }   // Modus gewechselt oder Fenster geschlossen
+    try { for (const p of usedPlaces) imp.graphs.set(p.id, await graphFor(p, p.radius)); }
+    catch { setStatus('OpenStreetMap ist gerade nicht erreichbar oder überlastet. Es wurde nichts übernommen; der bisherige Stand bleibt. Bitte in einer Minute noch einmal versuchen.', true); imp.items = []; imp.newPlaces = []; renderImport(); return; }
+    if (planMode !== 'pruefung' || $('#importPanel').hidden) { imp.items = []; return; }
     setStatus('Prüfe die Trails gegen die PO …'); await tick();
-    items.forEach((it, k) => {
-      if (!it.place) return;
-      const G = graphs.get(it.place.id);
-      Planner.setTerrain(G, it.place.terrain, $('#allowPaths').checked, $('#avoidLoops').checked, $('#strictTurns').checked);
-      const W = G._walk || (G._walk = Planner.walkGraph(G));
-      const c = Planner.trackCandidate(G, W, it.ll, it.level, { id: `${it.place.id}:imp${k}`, name: it.route });
-      c.G = G; c.place = it.place.id; c.issues = []; it.c = c;
-      const hard = c.v.checks.filter(x => !x.ok && !x.soft), soft = c.v.checks.filter(x => !x.ok && x.soft);
-      if (!c.matched) it.reasons.push('Die Strecke lässt sich nicht auf das Wegenetz legen: keine Regelprüfung möglich.');
-      hard.forEach(x => it.reasons.push(`${x.label}: ${x.detail}`));
-      if (c.matched && c.far > 0.1) it.reasons.push(`Zuordnung zum Wegenetz unsicher: ${Math.round(c.far * 100)} % der Strecke liegen mehr als 10 m neben bekannten Wegen. Die Regelprüfung ist dann ungenau.`);
-      soft.forEach(x => it.reasons.push(`Hinweis: ${x.detail}`));
-      it.status = !c.matched || hard.length ? 'bad' : (c.far > 0.1 || soft.length ? 'warn' : 'ok');
-      it.take = true;
-      c.issues = it.reasons.filter(r => !r.startsWith('Hinweis:'));   // Befunde für Trailkarte und gespeicherten Stand
-    });
+    items.forEach((it, k) => { it.key = k; if (it.place) checkItem(it); });
     buildImportChain();
     const locked = items.filter(i => i.status === 'locked').length;
-    setStatus(`${items.length} Datei${items.length === 1 ? '' : 'en'} gelesen${locked ? `, davon ${locked} nicht verwendbar` : ''}. Liste prüfen, Haken setzen oder entfernen, dann „Übernehmen“. Die Karte zeigt die Kette.`);
+    setStatus(`${items.length} Datei${items.length === 1 ? '' : 'en'} gelesen${locked ? `, davon ${locked} ohne Übernahme` : ''}${imp.newPlaces.length ? `, ${imp.newPlaces.length} neue${imp.newPlaces.length === 1 ? 'r Ort' : ' Orte'} erkannt` : ''}. Liste prüfen, dann „Übernehmen“. Die Karte zeigt die Kette.`);
   } catch (e) {
     console.error(e);
-    imp.items = []; setStatus(`Interner Fehler beim Import: ${e && e.message ? e.message : e}. Es wurde nichts übernommen.`, true);
+    imp.items = []; imp.newPlaces = []; setStatus(`Interner Fehler beim Import: ${e && e.message ? e.message : e}. Es wurde nichts übernommen.`, true);
   } finally { imp.busy = false; radarStop(); renderImport(); }
 }
+// Einen Trail im Wegenetz seines Orts zuordnen und gegen die PO prüfen (Wegenetz muss in imp.graphs liegen)
+function checkItem(it) {
+  const G = imp.graphs.get(it.place.id);
+  Planner.setTerrain(G, it.place.terrain, $('#allowPaths').checked, $('#avoidLoops').checked, $('#strictTurns').checked);
+  const W = G._walk || (G._walk = Planner.walkGraph(G));
+  const c = Planner.trackCandidate(G, W, it.ll, it.level, { id: `${it.place.id}:imp${it.key}`, name: it.route });
+  c.G = G; c.place = it.place.id; it.c = c;
+  it.reasons = it.reasons.filter(r => !r.startsWith('Ort nicht eindeutig'));
+  const hard = c.v.checks.filter(x => !x.ok && !x.soft), soft = c.v.checks.filter(x => !x.ok && x.soft);
+  if (!Pruefung.placeFor([it.place], it.ll[0], it.ll[it.ll.length - 1])) it.reasons.push('Start oder Ziel liegt außerhalb des Suchkreises dieses Orts; die Prüfung kann unvollständig sein.');
+  if (!c.matched) it.reasons.push('Die Strecke lässt sich nicht auf das Wegenetz legen: keine Regelprüfung möglich.');
+  hard.forEach(x => it.reasons.push(`${x.label}: ${x.detail}`));
+  if (c.matched && c.far > 0.1) it.reasons.push(`Zuordnung zum Wegenetz unsicher: ${Math.round(c.far * 100)} % der Strecke liegen mehr als 10 m neben bekannten Wegen. Die Regelprüfung ist dann ungenau.`);
+  soft.forEach(x => it.reasons.push(`Hinweis: ${x.detail}`));
+  it.status = !c.matched || hard.length ? 'bad' : (c.far > 0.1 || soft.length ? 'warn' : 'ok');
+  it.take = true; it.needsPlace = false;
+  c.issues = it.reasons.filter(r => !r.startsWith('Hinweis:'));   // Befunde für Trailkarte und gespeicherten Stand
+}
+// Ort von Hand wählen (Trail ohne eindeutigen Ort)
+async function choosePlace(it, pid) {
+  const place = importPlaces().find(p => p.id === pid);
+  if (!place || imp.busy) return;
+  imp.busy = true; renderImport();
+  try {
+    if (!imp.graphs.has(place.id)) imp.graphs.set(place.id, await graphFor(place, place.radius));
+    if (planMode !== 'pruefung' || $('#importPanel').hidden || !imp.items.includes(it)) return;   // Modus gewechselt oder Fenster geschlossen
+    it.place = place; checkItem(it); buildImportChain();
+    setStatus(`${it.name}: Ort ${placeLabel(place)} gewählt.`);
+  } catch { setStatus('OpenStreetMap ist gerade nicht erreichbar oder überlastet. Bitte in einer Minute noch einmal versuchen.', true); }
+  finally { imp.busy = false; renderImport(); }
+}
 
-// Kette je Ort aus den angehakten Trails; Konflikte (Abstand) nur melden
+// Kette je Ort aus den angehakten Trails (Reihenfolge mit den geringsten Übergangskosten); Konflikte (Abstand) nur melden
 function buildImportChain() {
   imp.order = []; imp.info = []; imp.conflicts = [];
   const minDist = +$('#minDist').value, take = imp.items.filter(i => i.take && i.c);
   const R = Planner.rng(1);
-  for (const p of state.places) {
+  for (const p of importPlaces()) {
     const its = take.filter(i => i.place.id === p.id);
     if (!its.length) continue;
     const G = its[0].c.G, W = G._walk;
@@ -2642,9 +2797,9 @@ function buildImportChain() {
   for (let a = 0; a < imp.order.length; a++) for (let b = a + 1; b < imp.order.length; b++) {
     const A = imp.order[a], B = imp.order[b], d = Math.min(near(A, B), near(B, A));
     if (d < minDist) {
-      imp.conflicts.push(`Trail ${a + 1} und Trail ${b + 1} liegen nur ${Math.round(d)} m auseinander (eingestellt: mind. ${minDist} m).`);
-      A.conflictIssues.push(`Nur ${Math.round(d)} m Abstand zu Trail ${b + 1} (eingestellt: mind. ${minDist} m)`);
-      B.conflictIssues.push(`Nur ${Math.round(d)} m Abstand zu Trail ${a + 1} (eingestellt: mind. ${minDist} m)`);
+      imp.conflicts.push(`Trail ${a + 1} und Trail ${b + 1} liegen nur ${Math.floor(d)} m auseinander (eingestellt: mind. ${minDist} m).`);
+      A.conflictIssues.push(`Nur ${Math.floor(d)} m Abstand zu Trail ${b + 1} (eingestellt: mind. ${minDist} m)`);
+      B.conflictIssues.push(`Nur ${Math.floor(d)} m Abstand zu Trail ${a + 1} (eingestellt: mind. ${minDist} m)`);
     }
   }
   drawImportPreview();
@@ -2654,7 +2809,15 @@ function drawImportPreview() {
   imp.order.forEach(c => { c.issues = (c.issues || []).filter(x => !/^Nur \d+ m Abstand/.test(x)).concat(c.conflictIssues || []); });
   const trails = imp.order.map(snapshot);
   const ids = new Set(trails.map(t => t.place));
-  drawExam(true, { places: state.places.filter(p => ids.has(p.id)), trails });
+  drawExam(true, { places: importPlaces().filter(p => ids.has(p.id)), trails });
+}
+// Übergang vom vorigen Trail als Text; warn: Lücke oder großer Sprung
+function transitionText(k) {
+  const c = imp.order[k], prev = imp.order[k - 1];
+  if (!c.link) return { text: prev && prev.place !== c.place ? `Ortswechsel: Beginn der Kette in ${placeLabel(importPlaces().find(p => p.id === c.place) || { id: c.place })}` : 'Beginn der Kette', warn: false };
+  if (!c.link.gap) return { text: `Fußweg ${Math.round(c.link.dist)} m vom Ziel von Trail ${k}`, warn: false };
+  const d = Math.round(c.link.dist);
+  return { text: `Lücke: ${d} m Luftlinie vom Ziel von Trail ${k}, kein passender Fußweg (75–250 m)${d > 250 ? ' – großer Sprung' : ''}`, warn: true };
 }
 
 function renderImport() {
@@ -2671,23 +2834,46 @@ function renderImport() {
   host.append(drop);
   if (imp.items.length) {
     const note = document.createElement('p'); note.className = 'hint';
-    note.textContent = 'Die Strecken bleiben unverändert. Rote Trails verletzen eine Regel, bleiben aber in der Liste: Der Haken entscheidet. Zwingend ausgeschlossen sind nur unlesbare Dateien, falsche Längen und Trails außerhalb aller Orte.';
+    note.textContent = 'Die Strecken bleiben unverändert. Sortiert nach vorgesehener Trailnummer. Rote Trails verletzen eine Regel, bleiben aber in der Liste: Der Haken entscheidet. Ausgeschlossen sind nur unlesbare Dateien und Längen ohne Stufe; Trails ohne eindeutigen Ort brauchen eine Ortswahl.';
     host.append(note);
   }
-  imp.items.forEach(it => {
+  if (imp.newPlaces.length) {
+    const np = document.createElement('p'); np.className = 'imp-sum';
+    np.textContent = 'Neu erkannte Orte (kommen mit „Übernehmen“ in die Ortsliste): ' + imp.newPlaces.map(p => `${p.id} ${placeLabel(p)} (${TERRAIN_LABELS[p.terrain]}, ${radiusLabel(p.radius)})`).join(' · ');
+    host.append(np);
+  }
+  // Reihenfolge: Trails der Kette nach Nummer, danach alle übrigen Dateien in Dateireihenfolge
+  const listed = imp.order.map(c => imp.items.find(i => i.c === c)).concat(imp.items.filter(i => !i.c || !imp.order.includes(i.c)));
+  listed.forEach(it => {
     const row = document.createElement('div'); row.className = 'imp-item';
-    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = it.take; cb.disabled = it.status === 'locked' || imp.busy;
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = it.take; cb.disabled = !it.c || imp.busy;
     cb.setAttribute('aria-label', `${it.name} übernehmen`);
     cb.onchange = () => { it.take = cb.checked; buildImportChain(); renderImport(); };
     const body = document.createElement('div');
-    const mark = { ok: '✓', warn: '⚠', bad: '✕', locked: '✕' }[it.status];
+    const st = it.needsPlace ? 'warn' : it.status === 'locked' ? 'bad' : it.status;
+    const mark = it.needsPlace ? '?' : { ok: '✓', warn: '⚠', bad: '✕', locked: '✕' }[it.status];
     const t1 = document.createElement('div');
-    const sp = document.createElement('b'); sp.className = 'st-' + (it.status === 'locked' ? 'bad' : it.status); sp.textContent = mark + ' ';
-    const pos = imp.order.indexOf(it.c);
-    t1.append(sp, document.createTextNode(it.name + (pos >= 0 ? ` → Trail ${pos + 1}` : '')));
+    const sp = document.createElement('b'); sp.className = 'st-' + st; sp.textContent = mark + ' ';
+    const pos = it.c ? imp.order.indexOf(it.c) : -1;
+    if (pos >= 0) { const nb = document.createElement('b'); nb.textContent = `Trail ${pos + 1} · `; t1.append(sp, nb); } else t1.append(sp);
+    t1.append(document.createTextNode(it.name));
     const t2 = document.createElement('div'); t2.className = 'meta';
-    t2.textContent = [it.route && it.route !== it.name ? it.route : '', it.len ? Math.round(it.len) + ' m' : '', it.level || '', it.place ? placeLabel(it.place) : ''].filter(Boolean).join(' · ');
+    const pl = it.place ? `${placeLabel(it.place)}${it.place.proposed ? ' (neuer Ort)' : ''}` : '';
+    t2.textContent = [it.route && it.route !== it.name ? it.route : '', it.len ? Math.round(it.len) + ' m' : '', it.level || '', pl,
+      it.c ? `PO-Prüfung: ${it.status === 'ok' ? 'alle Regeln erfüllt' : it.status === 'warn' ? 'erfüllt, mit Hinweis' : 'nicht erfüllt'}` : ''].filter(Boolean).join(' · ');
     body.append(t1, t2);
+    if (pos >= 0) {
+      const tr = transitionText(pos), t3 = document.createElement('div');
+      t3.className = tr.warn ? 'st-warn' : 'meta'; t3.textContent = (tr.warn ? '⚠ ' : '') + tr.text;
+      body.append(t3);
+    }
+    if (it.needsPlace && !imp.busy) {
+      const sel = document.createElement('select'); sel.setAttribute('aria-label', `Ort für ${it.name}`);
+      const o0 = document.createElement('option'); o0.value = ''; o0.textContent = 'Ort wählen …'; sel.append(o0);
+      for (const p of importPlaces()) { const o = document.createElement('option'); o.value = p.id; o.textContent = `${p.id} · ${placeLabel(p)}${p.proposed ? ' (neu)' : ''}`; sel.append(o); }
+      sel.onchange = () => { if (sel.value) choosePlace(it, sel.value); };
+      body.append(sel);
+    }
     if (it.reasons.length) { const ul = document.createElement('ul'); it.reasons.forEach(r => { const li = document.createElement('li'); li.textContent = r; ul.append(li); }); body.append(ul); }
     row.append(cb, body); host.append(row);
   });
@@ -2705,19 +2891,30 @@ function renderImport() {
 }
 function applyImport() {
   const order = imp.order.slice();
-  if (!order.length || planMode !== 'pruefung') return;
-  if (order.some(c => !state.places.some(p => p.id === c.place && p.center))) { setStatus('Die Ortsliste wurde geändert. Bitte die Dateien noch einmal einlesen.', true); return; }
+  if (!order.length || planMode !== 'pruefung' || imp.busy) return;
+  // Neue Orte brauchen ihren Kennbuchstaben noch frei (oder als leeren Ort), vorhandene Orte müssen unverändert da sein
+  const used = new Set(order.map(c => c.place));
+  const fresh = imp.newPlaces.filter(p => used.has(p.id));
+  const stale = order.some(c => !fresh.some(p => p.id === c.place) && !state.places.some(p => p.id === c.place && p.center))
+    || fresh.some(p => state.places.some(q => q.id === p.id && q.center));
+  if (stale) { setStatus('Die Ortsliste wurde geändert. Bitte die Dateien noch einmal einlesen.', true); return; }
   if (state.exam && !confirm('Der Import ersetzt den aktuellen Prüfungsstand und die Teamliste. Fortfahren?')) return;
+  for (const p of fresh) {
+    const place = { id: p.id, name: p.name, center: p.center, terrain: p.terrain, radius: p.radius };
+    const k = state.places.findIndex(q => q.id === p.id);
+    if (k >= 0) state.places[k] = place; else state.places.push(place);
+  }
+  state.places.sort((a, b) => a.id.localeCompare(b.id));
   state.teams = order.map((c, i) => ({ name: `Team ${i + 1}`, level: c.tr.level, place: c.place }));
   state.planTeams = state.teams.map(t => ({ ...t }));
   state.plans = [order]; state.active = 0; state.pools = {}; state.seen = order.map(c => new Set([c.id]));
   const info = imp.info.slice();
   startExam();
-  persist(); renderTeams();
+  persist(); renderPlaces(); drawArea(); renderTeams();
   closeImport();
   renderResults();
   drawExam(true);
-  setStatus(`${order.length} Trail${order.length === 1 ? '' : 's'} importiert.${chainStatus(info)} Strecken unverändert aus den GPX-Dateien. Vor Ort prüfen: Zugang, Sicht, Abholung, Verkehr.`);
+  setStatus(`${order.length} Trail${order.length === 1 ? '' : 's'} importiert${fresh.length ? `, ${fresh.length} Ort${fresh.length === 1 ? '' : 'e'} neu in der Ortsliste` : ''}.${chainStatus(info)} Strecken unverändert aus den GPX-Dateien. Vor Ort prüfen: Zugang, Sicht, Abholung, Verkehr.`);
 }
 
 // Ortszusatz im Prüfungsstand, nur wenn er mehrere Orte hat

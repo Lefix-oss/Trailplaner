@@ -341,3 +341,24 @@ test('parseGpx nimmt bei Track und Route nur den Track', () => {
   const r = Pruefung.parseGpx('<gpx><rte><rtept lat="1" lon="1"/><rtept lat="1" lon="2"/></rte><trk><trkseg><trkpt lat="2" lon="2"/><trkpt lat="2" lon="3"/></trkseg></trk></gpx>');
   assert.deepEqual(r.ll, [[2, 2], [2, 3]]);
 });
+
+test('groupTracks fasst nahe Strecken zu Ortsvorschlägen zusammen und rät nicht', () => {
+  const R = [400, 600, 800, 1200, 1600, 2200];
+  const at = (dn, de) => [49.65 + dn / 110574, 9.95 + de / (111320 * Math.cos(49.65 * Math.PI / 180))];
+  const line = (n0, e0, n1, e1) => [at(n0, e0), at(n1, e1)];
+  const tracks = [line(0, 0, 0, 300), line(100, 500, 100, 800), line(3000, 0, 3000, 300), line(9000, 0, 14000, 0)];
+  const r = Pruefung.groupTracks(tracks, R);
+  assert.equal(r.groups.length, 2);
+  assert.deepEqual(r.groups[0].members, [0, 1]);
+  assert.equal(r.groups[0].radius, 600);   // 800 m breit: halbe Breite 400 m plus 100 m Rand
+  assert.deepEqual(r.groups[1].members, [2]);
+  assert.deepEqual(r.unsure, [3]);         // 5 km lang: passt in keinen Kreis (größter Radius 2,2 km)
+});
+
+test('reverseName nimmt nur echte Ortsnamen', () => {
+  assert.equal(Pruefung.reverseName({ address: { village: 'Musterdorf', county: 'Landkreis X' } }), 'Musterdorf');
+  assert.equal(Pruefung.reverseName({ address: { suburb: 'Nord' } }), 'Nord');
+  assert.equal(Pruefung.reverseName({ address: { road: 'Feldweg' } }), null);
+  assert.equal(Pruefung.reverseName({ error: 'Unable to geocode' }), null);
+  assert.equal(Pruefung.reverseName(null), null);
+});

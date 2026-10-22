@@ -417,3 +417,42 @@ test('matchTrack behält ein kurzes letztes Stück', () => {
   const m = Planner.matchTrack(G, W, Planner.trailPts(G, tr));
   assert.equal(m.legs.length, 3);
 });
+
+test('orderFixed wählt die Reihenfolge mit den kürzesten Übergängen, nicht die Eingabereihenfolge', () => {
+  const G = grid(), W = Planner.walkGraph(G);
+  const c = (id, level, x0) => ({ id, tr: { level }, v: { pts: [[x0, 45], [x0 + 100, 45]] } });   // gerade Linien, 100 m auseinander
+  const r = Planner.orderFixed(G, W, [c('C', 'MT-I', 400), c('A', 'MT-I', 0), c('B', 'MT-I', 200)], 30);
+  assert.deepEqual(r.order.map(x => x.id), ['A', 'B', 'C']);
+  assert.equal(r.links.length, 3);
+  assert.equal(r.links[0], null);
+});
+
+test('orderFixed hält MT-I vor MT-II, auch wenn MT-II räumlich vorne liegt', () => {
+  const G = grid(), W = Planner.walkGraph(G);
+  const c = (id, level, x0) => ({ id, tr: { level }, v: { pts: [[x0, 45], [x0 + 100, 45]] } });
+  const r = Planner.orderFixed(G, W, [c('D', 'MT-II', -200), c('C', 'MT-I', 400), c('A', 'MT-I', 0), c('B', 'MT-I', 200)], 30);
+  assert.equal(r.order[3].id, 'D');
+  assert.deepEqual(r.order.slice(0, 3).map(x => x.tr.level), ['MT-I', 'MT-I', 'MT-I']);
+});
+
+test('orderFixed löst auch mehr als 12 Trails ohne Dubletten', () => {
+  const G = grid(), W = Planner.walkGraph(G);
+  const list = [...Array(14).keys()].map(k => ({ id: 'x' + k, tr: { level: 'MT-I' }, v: { pts: [[((k * 5) % 14) * 40, 45], [((k * 5) % 14) * 40 + 20, 45]] } }));
+  const r = Planner.orderFixed(G, W, list, 30);
+  assert.equal(new Set(r.order.map(x => x.id)).size, 14);
+  // Näherung (14 Trails) höchstens so viele Lücken wie die exakte Lösung für 12 davon plus die zwei zusätzlichen Übergänge
+  const exact = Planner.orderFixed(G, W, list.slice(0, 12), 30);
+  assert.ok(r.gaps <= exact.gaps + 2, `Lücken ${r.gaps} gegenüber exakt ${exact.gaps}`);
+});
+
+test('orderFixed hält auch bei mehr als 12 Trails und drei Stufen die Stufenfolge ein', () => {
+  const G = grid(), W = Planner.walkGraph(G), R = Planner.rng(7), lv = ['MT-I', 'MT-II', 'MT-III'];
+  for (let run = 0; run < 20; run++) {
+    const n = 13 + (run % 6);
+    const list = [...Array(n).keys()].map(k => { const x = Math.floor(R() * 450), y = Math.floor(R() * 450); return { id: 'r' + k, tr: { level: lv[Math.floor(R() * 3)] }, v: { pts: [[x, y], [x + 30, y]] } }; });
+    const r = Planner.orderFixed(G, W, list, 30);
+    const ranks = r.order.map(c => lv.indexOf(c.tr.level));
+    assert.equal(new Set(r.order.map(c => c.id)).size, n);
+    assert.ok(ranks.every((x, i) => i === 0 || x >= ranks[i - 1]), `Stufenfolge ${r.order.map(c => c.tr.level)}`);
+  }
+});

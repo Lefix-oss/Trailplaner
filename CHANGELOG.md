@@ -2,6 +2,16 @@
 
 Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Die aktuelle Version steht in der App neben der Überschrift.
 
+## V1.9 – 22.10.2026
+
+GPX-Import: Orte automatisch erkennen, Reihenfolge nach kürzesten Übergängen.
+
+- **Keine Orte mehr vorher anlegen:** Liegt ein Trail in einem Ort der Ortsliste, wird dieser genommen. Sonst gruppiert die App die übrigen Trails nach Lage und schlägt je Gruppe einen Ort vor: Mitte der Trails, kleinster passender Radius, Gelände „Auch Feld und Wald“, Name über OpenStreetMap (Nominatim). Ohne verlässlichen Namen heißt der Ort wie beim Tippen auf die Karte „Kartenpunkt …“. In die Ortsliste kommen die neuen Orte erst mit „Übernehmen“.
+- **Nicht raten:** Passt eine Strecke in keinen Suchkreis oder wären mehr als vier Orte nötig, ist der Trail mit „?“ markiert. Er bekommt eine Auswahlliste für den Ort.
+- **Reihenfolge:** Die importierten Trails werden je Ort so geordnet, dass möglichst wenige Lücken und möglichst kurze Übergänge entstehen (Ziel → nächster Start). Bis 12 Trails je Ort wird die beste Reihenfolge exakt berechnet. Die Dateireihenfolge spielt keine Rolle mehr. MT-I läuft weiter vor MT-II. Ein Fußweg zählt nur, wenn er die bestehenden Regeln erfüllt (75–250 m, mind. 75 m Luftlinie, Abstand zu später gelaufenen Trails).
+- **Vorschau:** Sortiert nach vorgesehener Trailnummer. Jede Zeile zeigt Datei, Länge, Stufe, Ort (auch „neuer Ort“), PO-Ergebnis und den Übergang vom vorigen Trail: Fußweg, Lücke mit Luftlinie (Warnung, bei mehr als 250 m „großer Sprung“) oder Ortswechsel.
+- Die automatische Trailplanung und die importierten Strecken bleiben unverändert. Die Kette für importierte Trails ist außerdem schneller (bei 7 Trails 0,1 s statt 3,6 s).
+
 ## V1.8 – 22.10.2026
 
 Trails aus GPX-Dateien importieren (nur Prüfungsmodus).
