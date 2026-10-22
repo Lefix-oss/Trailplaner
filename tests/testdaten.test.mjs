@@ -22,6 +22,9 @@ test('testdaten: Reihenfolge der Giebelstädter MT-I-Trails nach kürzesten Übe
   assert.deepEqual(ch.order.map(c => num(c.id)), [4, 5, 6, 7, 1, 2, 3]);
   assert.equal(ch.links.length, 7);
   assert.equal(ch.links[0], null);
+  // Übergänge nach der Regel „nicht kreuzen, berühren, benutzen“ (Startstück des nächsten Trails erlaubt)
+  assert.deepEqual(ch.links.slice(1).map(w => w && Math.round(w.dist)), [253, 759, 323, 63, 146, 501]);
+  assert.equal(ch.gaps, 0);
   // Die Linien bleiben unverändert
   ch.order.forEach(c => assert.deepEqual(c.ll, tracks.find(t => t.f === c.id).ll));
 });

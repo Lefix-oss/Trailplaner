@@ -362,3 +362,11 @@ test('reverseName nimmt nur echte Ortsnamen', () => {
   assert.equal(Pruefung.reverseName({ error: 'Unable to geocode' }), null);
   assert.equal(Pruefung.reverseName(null), null);
 });
+
+test('parseExam übernimmt den Hinweis am Übergang (link.note) und prüft ihn', () => {
+  const base = note => JSON.stringify({ format: Pruefung.FORMAT, version: 2, places: [{ id: 'A', center: { lat: 49.6, lon: 9.9 }, radius: 1000 }],
+    trails: [{ level: 'MT-I', place: 'A', ll: [[49.6, 9.9], [49.601, 9.9]], length: 300, link: { dist: 320, gap: false, ll: null, note } }] });
+  assert.equal(Pruefung.parseExam(base('langer Übergang (320 m Fußweg)')).trails[0].link.note, 'langer Übergang (320 m Fußweg)');
+  assert.throws(() => Pruefung.parseExam(base({ x: 1 })), /beschädigt/);
+  assert.throws(() => Pruefung.parseExam(base('x'.repeat(301))), /beschädigt/);
+});

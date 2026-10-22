@@ -2,6 +2,17 @@
 
 Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Die aktuelle Version steht in der App neben der Überschrift.
 
+## V2.0 – 22.10.2026
+
+GPX-Import: Übergangswege nach der fachlichen Regel statt nach alten Generatorgrenzen.
+
+- **Regel für den Weg vom Ziel zum nächsten Start:** Er darf keinen noch nicht gelaufenen Trail kreuzen, berühren oder benutzen. Geprüft wird direkt statt mit einem festen Abstand: welche Wegstücke ein Trail laut Zuordnung benutzt (metergenau), über welche Kreuzungen er läuft und wo seine GPX-Linie einen Weg schneidet oder berührt. Bereits gelaufene Trails sperren nichts.
+- **Startstück des nächsten Trails:** Der Weg darf sich dem Start auf dem Wegstück nähern, auf dem der nächste Trail beginnt (bis zur ersten Abzweigung): von hinten oder über einen Seitenweg an dieser Abzweigung, den der Trail nicht benutzt. Er endet am Start und läuft nie in dessen weiteren Verlauf. Hat der Trail keine Abzweigung (ein einziges Wegstück), gibt es nur den Zugang von hinten.
+- **Keine harten Grenzen mehr bei importierten Trails:** Unter 75 m zwischen Ziel und nächstem Start und über 250 m Fußweg gibt es nur noch Warnungen, dazu „Umweg“ ab der dreifachen Luftlinie. Gesucht wird bis 1,5 km; das ist eine technische Grenze der Suche, keine Regel.
+- **Lücken nur noch, wenn wirklich kein zulässiger Weg existiert,** mit Grund, zum Beispiel „Start von Trail 3 nur über Trail 4 erreichbar“. Die Luftlinie steht nur zur Information daneben.
+- **Anzeige:** Vorschau, Trailkarte und Karte zeigen jeden gefundenen Weg mit Länge und Hinweisen. Die Hinweise werden im Prüfungsstand mitgespeichert.
+- Reihenfolge und Nummerierung, die importierten Strecken und die automatische Trailplanung bleiben unverändert.
+
 ## V1.9 – 22.10.2026
 
 GPX-Import: Orte automatisch erkennen, Reihenfolge nach kürzesten Übergängen.

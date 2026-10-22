@@ -1325,7 +1325,7 @@ const Planner = (() => {
     if (opts.fixed) {
       const cands = LEVEL_ORDER.filter(lv => seq.some(x => x.t.level === lv)).flatMap(lv => (pools[lv] ? pools[lv].list : []));
       const r = orderFixed(G, W, cands, minDist, opts);
-      return result(r.order, r.links, r.gaps);
+      return Object.assign(result(r.order, r.links, r.gaps), { notes: r.notes });
     }
     const memo = f => { const m = new Map(); return (...k) => { const key = k.map(x => (x && x.id) || x).join('|'); if (!m.has(key)) m.set(key, f(...k)); return m.get(key); }; };
     const bStart = memo(c => blockedEdges(W, c.v.pts, minDist, c.v.pts[0], 20));
@@ -1405,12 +1405,135 @@ const Planner = (() => {
     return p.plans.length ? result(p.plans[0], new Array(n).fill(null), n - 1) : result([], [], 0);
   }
 
+  // ---------- Übergangsweg zwischen importierten Trails ----------
+  // Regel: Der Weg vom Ziel zum nächsten Start darf keinen noch nicht gelaufenen Trail kreuzen, berühren oder benutzen.
+  // Ausnahme: das Startstück des nächsten Trails (sein erstes Wegstück bis zur ersten Abzweigung). Der Weg darf sich dem Start
+  // von hinten nähern oder an der ersten Abzweigung über einen Weg ankommen, den der Trail nicht benutzt, und dann nur noch
+  // auf dem Startstück zurück zum Start gehen. Er endet am Start. Bereits gelaufene Trails sperren nichts.
+  // Statt eines festen Abstands wird direkt geprüft: benutzte Wegstücke (laut Zuordnung, metergenau), alle Kreuzungen und Knoten,
+  // die der Trail berührt (auch an den Grenzen seiner Beine), und Stellen, an denen seine GPX-Linie einen Weg schneidet oder
+  // berührt (bis 3 m, für Stücke abseits bekannter Wege).
+  const TRANSIT_TOUCH = 3, TRANSIT_MAX = 1500;   // 1500 m: technische Grenze der Suche, keine Regel (das Wegenetz reicht nur so weit wie der Suchkreis)
+  function edgeIndex(G) {
+    if (!G._edgeSeg) { G._edgeSeg = []; for (const sg of G.segs) for (let k = 0; k + 1 < sg.nodes.length; k++) G._edgeSeg.push({ seg: sg, k }); }
+    if (!G._segBase) { G._segBase = []; let n = 0; for (const s of G.segs) { G._segBase[s.id] = n; n += s.nodes.length - 1; } }
+    return G._segBase;
+  }
+  const legRange = (s, l) => (l.fwd ? [l.d0, l.d1] : [s.len - l.d1, s.len - l.d0]);   // Bein in Metern des Segments (ab s.a)
+  // Sperre eines noch nicht gelaufenen Trails; used: Kanten, die er laut Zuordnung benutzt
+  function transitBlocks(G, W, c) {
+    const base = edgeIndex(G), out = new Set(), used = new Set(), nodes = new Set();
+    for (const l of (c.tr && c.tr.legs) || []) {
+      const s = G.segs[l.seg], [a, b] = legRange(s, l);
+      for (let k = 0; k + 1 < s.nodes.length; k++) if (s.cum[k + 1] > a + 0.5 && s.cum[k] < b - 0.5) { out.add(base[s.id] + k); used.add(base[s.id] + k); }
+      for (let k = 0; k < s.nodes.length; k++) if (s.cum[k] >= a - 0.5 && s.cum[k] <= b + 0.5) nodes.add(s.nodes[k]);
+    }
+    for (const nd of nodes) for (const e of W.nb.get(nd) || []) out.add(e.id);   // Kreuzungen und Knoten, die der Trail berührt
+    const P = c.v.pts;
+    if (P.length > 1) {
+      const xs = P.map(p => p[0]), ys = P.map(p => p[1]), bb = [Math.min(...xs) - 5, Math.min(...ys) - 5, Math.max(...xs) + 5, Math.max(...ys) + 5];
+      for (const e of W.edges) {
+        if (out.has(e.id) || Math.max(e.pa[0], e.pb[0]) < bb[0] || Math.min(e.pa[0], e.pb[0]) > bb[2] || Math.max(e.pa[1], e.pb[1]) < bb[1] || Math.min(e.pa[1], e.pb[1]) > bb[3]) continue;
+        for (let i = 1; i < P.length; i++) if (segSegDist(e.pa, e.pb, P[i - 1], P[i]) <= TRANSIT_TOUCH) { out.add(e.id); break; }
+      }
+    }
+    return { out, used, nodes };
+  }
+  // Stellen auf Kante e (Meter ab e.pa), an denen Trail c die Kante benutzt oder (withGpx) mit seiner GPX-Linie berührt
+  function transitTouches(G, c, e, withGpx) {
+    const es = G._edgeSeg[e.id], sg = es.seg, k = es.k, out = [];
+    for (const l of (c.tr && c.tr.legs) || []) if (l.seg === sg.id) {
+      const [a, b] = legRange(sg, l), lo = Math.max(a, sg.cum[k]) - sg.cum[k], hi = Math.min(b, sg.cum[k + 1]) - sg.cum[k];
+      if (hi > lo) out.push([lo, hi]);
+    }
+    if (withGpx) {
+      const at = p => { const dx = e.pb[0] - e.pa[0], dy = e.pb[1] - e.pa[1], l2 = dx * dx + dy * dy; return (l2 ? Math.max(0, Math.min(1, ((p[0] - e.pa[0]) * dx + (p[1] - e.pa[1]) * dy) / l2)) : 0) * e.len; };
+      const P = c.v.pts;
+      for (let i = 1; i < P.length; i++) if (segSegDist(e.pa, e.pb, P[i - 1], P[i]) <= TRANSIT_TOUCH) { const x = at(P[i]), y = at(P[i - 1]); out.push([Math.min(x, y) - 1, Math.max(x, y) + 1]); }
+    }
+    return out;
+  }
+  // Kürzester zulässiger Übergang von fromPt (Ziel) zum Start von next; later: alle danach gelaufenen Trails dieses Orts.
+  // Ergebnis { dist, pts } oder { dist: null, why: 'ziel' | 'start' | 'weg', by: [Trails, die sperren] }
+  function transitPath(G, W, fromPt, next, later, o = {}) {
+    const max = o.max ?? TRANSIT_MAX, toPt = next.v.pts[0], base = edgeIndex(G);
+    const nb = transitBlocks(G, W, next), lb = later.map(c => transitBlocks(G, W, c));
+    const blockedLater = id => lb.some(x => x.out.has(id)), blocked = id => nb.out.has(id) || blockedLater(id);
+    const sf = snapEdge(W, fromPt), st = snapEdge(W, toPt);
+    if (!sf || !st) return { dist: null, why: 'weg', by: [] };
+    const s0 = sf.e, t0 = st.e, ps = sf.t * s0.len, pt = st.t * t0.len;
+    // Startstück: erstes Wegstück bis zur ersten Abzweigung, dort läuft der Trail mit dem zweiten Bein weiter.
+    // Hat er nur ein Bein, wäre das Startstück der ganze Trail: dann gibt es diesen Zugang nicht.
+    // (Die Zuordnung lässt das erste Bein manchmal einige Meter vor der Abzweigung enden; maßgeblich ist das Ende des Wegstücks.)
+    const legs = (next.tr && next.tr.legs) || [];
+    let exit = null;
+    if (legs.length > 1) {
+      const l0 = legs[0], S0 = G.segs[l0.seg], os = oriented(S0, l0.fwd);
+      exit = { node: os.end, off: S0.len - l0.d0, tail: slice(os.pts, os.cum, l0.d0, S0.len).reverse(), S0, l0 };
+    }
+    const lead = id => id >= base[exit.S0.id] && id < base[exit.S0.id] + exit.S0.nodes.length - 1;
+    // Ziel liegt auf dem Startstück vor dem Start: direkt auf dem Startstück zurück zum Start
+    if (exit && lead(s0.id)) {
+      const es = G._edgeSeg[s0.id], x0 = es.seg.cum[es.k] + ps, x = exit.l0.fwd ? x0 : exit.S0.len - x0;
+      if (x >= exit.l0.d0 - 0.5) {
+        const os = oriented(exit.S0, exit.l0.fwd), lo = Math.min(x, exit.l0.d0), part = slice(os.pts, os.cum, lo, Math.max(x, exit.l0.d0)).reverse();
+        const [a, b] = legRange(exit.S0, { fwd: exit.l0.fwd, d0: lo, d1: x });
+        let free = true;
+        for (let k = 0; k + 1 < exit.S0.nodes.length; k++) if (exit.S0.cum[k + 1] > a + 0.5 && exit.S0.cum[k] < b - 0.5 && blockedLater(base[exit.S0.id] + k)) free = false;
+        if (free) return { dist: Math.max(0, x - exit.l0.d0), pts: [fromPt, ...part.slice(1)] };
+      }
+    }
+    // Ziel- und Startkante je Seite metergenau: frei, wenn kein sperrender Trail das Stück zwischen Punkt und Kantenende berührt
+    const who = [next, ...later];
+    const hits = (e, x0, x1) => who.filter((c, i) => transitTouches(G, c, e, i > 0).some(([lo, hi]) => hi > Math.min(x0, x1) + 0.5 && lo < Math.max(x0, x1) - 0.5));
+    // Knoten, die ein sperrender Trail berührt, sind auch als Ende von Ziel- oder Startkante tabu (Ausnahme: erste Abzweigung des nächsten Trails)
+    const touched = n => (n !== (exit && exit.node) && nb.nodes.has(n)) || lb.some(x => x.nodes.has(n));
+    const starts = [], ends = [];
+    if (!hits(s0, 0, ps).length && (!touched(s0.a) || (exit && s0.a === exit.node))) starts.push([s0.a, ps]);
+    if (!hits(s0, ps, s0.len).length && (!touched(s0.b) || (exit && s0.b === exit.node))) starts.push([s0.b, s0.len - ps]);
+    if (!hits(t0, 0, pt).length && !touched(t0.a)) ends.push([t0.a, pt]);
+    if (!hits(t0, pt, t0.len).length && !touched(t0.b)) ends.push([t0.b, t0.len - pt]);
+    let best = null;
+    const offer = (d, pts) => { if (d <= max && (!best || d < best.dist)) best = { dist: d, pts }; };
+    if (s0 === t0 && !hits(s0, ps, pt).length) offer(Math.abs(ps - pt), [fromPt, toPt]);
+    // an der ersten Abzweigung ankommen (über einen Weg, den der nächste Trail nicht benutzt) und auf dem Startstück zum Start
+    const arrive = e => exit && !nb.used.has(e.id) && !blockedLater(e.id);
+    for (const [n0, off0] of starts) {
+      if (exit && n0 === exit.node) { if (arrive(s0)) offer(off0 + exit.off, [fromPt, ...exit.tail]); continue; }
+      const D = new Map([[n0, off0]]), prev = new Map(), done = new Set();
+      const back = u => { const path = [W.pos.get(u)]; let x = u; while (prev.has(x)) { x = prev.get(x); path.unshift(W.pos.get(x)); } return path; };
+      for (;;) {
+        let u = null, du = Infinity;
+        for (const [k, v] of D) if (!done.has(k) && v < du) { du = v; u = k; }
+        if (u === null || du > max || (best && du >= best.dist)) break;
+        done.add(u);
+        for (const [n1, off1] of ends) if (u === n1) offer(du + off1, [fromPt, ...back(u), toPt]);
+        for (const e of W.nb.get(u) || []) {
+          if (e === s0 || e === t0) continue;
+          const v = e.a === u ? e.b : e.a, dv = du + e.len;
+          if (exit && v === exit.node) { if (arrive(e)) offer(dv + exit.off, [fromPt, ...back(u), ...exit.tail]); continue; }
+          if (blocked(e.id)) continue;
+          if (!done.has(v) && (!D.has(v) || dv < D.get(v))) { D.set(v, dv); prev.set(v, u); }
+        }
+      }
+    }
+    if (best) return best;
+    if (!starts.length) return { dist: null, why: 'ziel', by: [...new Set([...hits(s0, 0, ps), ...hits(s0, ps, s0.len)])] };
+    if (!ends.length) {
+      // Start weder von hinten noch über die erste Abzweigung erreichbar: wer sperrt dort?
+      const atExit = exit ? later.filter((c, i) => (W.nb.get(exit.node) || []).some(e => !nb.used.has(e.id) && lb[i].out.has(e.id))) : [];
+      // der nächste Trail selbst zählt hier nicht: sein Startstück vor dem Start ist ohnehin sein eigener Verlauf
+      return { dist: null, why: 'start', by: [...new Set([...hits(t0, 0, pt), ...hits(t0, pt, t0.len), ...atExit])].filter(c => c !== next) };
+    }
+    return { dist: null, why: 'weg', by: [] };
+  }
+
   // Reihenfolge fester Trails (GPX-Import) mit den geringsten Übergangskosten (Lücken wiegen schwer, dann die Wege):
   // gültiger Fußweg (75–250 m Fußweg, mind. 75 m Luftlinie, meidet den nächsten Trail außer an dessen Start) kostet seine Länge,
   // jede Lücke 1000 m plus Luftlinie. Stufen bleiben in der Reihenfolge MT-I, MT-II, MT-III. Bis 12 Trails exakt
-  // (dynamische Programmierung über Teilmengen), darüber nächster Nachbar mit 2-opt. Danach wird jeder Fußweg
-  // mit allen später gelaufenen Trails als Sperre neu gesucht; gelingt das nicht, ist der Übergang eine Lücke.
-  // Ergebnis: { order, links, gaps } wie chain(); die Trails selbst bleiben unverändert.
+  // (dynamische Programmierung über Teilmengen), darüber nächster Nachbar mit 2-opt. Danach bekommt jeder Übergang den
+  // kürzesten zulässigen Weg nach transitPath; gibt es keinen, ist er eine Lücke (Grund in notes).
+  // Ergebnis: { order, links, gaps, notes } wie chain(); die Trails selbst bleiben unverändert.
   const GAP_COST = 1000;
   function orderFixed(G, W, cands, minDist, o = {}) {
     const minLen = o.minLen ?? 75, maxLen = o.maxLen ?? 250, minAir = o.minAir ?? 75, n = cands.length;
@@ -1475,8 +1598,12 @@ const Planner = (() => {
       seq = best;
     }
     // Fußwege der Gruppe dürfen keinen später gelaufenen Trail berühren (wie in chain)
-    const links = seq.map((x, k) => (k === 0 ? null : link(seq[k - 1], x, seq.slice(k + 1).map(y => blockedEdges(W, cands[y].v.pts, minDist)))));
-    return { order: seq.map(i => cands[i]), links, gaps: links.slice(1).filter(w => !w).length };
+    const links = [null], notes = [null];
+    for (let k = 1; k < seq.length; k++) {
+      const r = transitPath(G, W, endPt(cands[seq[k - 1]]), cands[seq[k]], seq.slice(k + 1).map(y => cands[y]), o);
+      links.push(r.dist === null ? null : r); notes.push(r.dist === null ? r : null);
+    }
+    return { order: seq.map(i => cands[i]), links, gaps: links.slice(1).filter(w => !w).length, notes };
   }
 
   // Ersatz für einen Trail in einer Kette. prevEnd: Ziel des vorigen Trails, nextStart: Start des nächsten (je null = keiner),
@@ -1542,7 +1669,7 @@ const Planner = (() => {
     if (s.blocked) return false;
     return true;
   }
-  return { LEVELS, buildGraph, prepare, setTerrain, pool, plans, alternatives, walkGraph, blockedEdges, walkPath, chain, replacement, reverseTrail, similar, snapEdge, validate, describe, endpointNames, toGPX, rng, trailPts, compatible, levelByLength, matchTrack, trackCandidate, orderFixed };
+  return { LEVELS, buildGraph, prepare, setTerrain, pool, plans, alternatives, walkGraph, blockedEdges, walkPath, chain, replacement, reverseTrail, similar, snapEdge, validate, describe, endpointNames, toGPX, rng, trailPts, compatible, levelByLength, matchTrack, trackCandidate, orderFixed, transitPath };
 })();
 if (typeof module !== 'undefined') module.exports = Planner;
 
@@ -1806,6 +1933,7 @@ const Pruefung = (() => {
       for (const k of ['length', 'turns', 'decisions', 'crossings']) { if (t[k] === undefined) t[k] = 0; else if (!num(t[k])) throw bad(); }
       if (t.link !== undefined && t.link !== null) {
         if (typeof t.link !== 'object' || !num(t.link.dist) || (t.link.ll != null && !(Array.isArray(t.link.ll) && t.link.ll.every(pt)))) throw bad();
+        if (t.link.note !== undefined && !(typeof t.link.note === 'string' && t.link.note.length <= 300)) throw bad();
       }
       if (t.steps !== undefined && !t.steps.every(s => s && typeof s === 'object' && num(s.at) && (s.options === undefined || num(s.options)) && typeof s.text === 'string' && typeof s.kind === 'string')) throw bad();
       if (t.imported !== undefined && typeof t.imported !== 'boolean') throw bad();
@@ -1841,7 +1969,7 @@ const store = {
 const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946], contact: '' };
 $('#privacyWho').textContent = CLUB.name + (CLUB.contact ? ', Kontakt: ' + CLUB.contact : '');
 // Versionsnummer: jede Änderung zählt um 0.1 hoch (V1.0 … V1.9, dann V2.0 …); Änderungen stehen in CHANGELOG.md
-const APP_VERSION = '1.9';
+const APP_VERSION = '2.0';
 document.getElementById('appVersion').textContent = 'V' + APP_VERSION;
 const saved = store.get();
 function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }
@@ -2428,7 +2556,7 @@ function snapshotImported(c) {
     steps: c.matched ? Planner.describe(G, c.tr).map(s => ({ at: s.at, kind: s.kind, text: s.text, options: s.options || 0 }))
       : [{ at: 0, kind: 'info', text: 'Keine Wegbeschreibung: Die Strecke ließ sich nicht auf das Wegenetz legen.', options: 0 }],
     startStreet: names.start, endStreet: names.end, checked: false, place: c.place,
-    link: c.link === undefined ? undefined : c.link && { dist: Math.round(c.link.dist), gap: !!c.link.gap, ll: c.link.pts ? c.link.pts.map(p => G.toLatLon(p)) : null },
+    link: c.link === undefined ? undefined : c.link && { dist: Math.round(c.link.dist), gap: !!c.link.gap, ll: c.link.pts ? c.link.pts.map(p => G.toLatLon(p)) : null, note: c.link.note ? String(c.link.note).slice(0, 300) : undefined },
   };
 }
 function examSettings() {
@@ -2776,12 +2904,30 @@ function buildImportChain() {
     const ch = Planner.chain(G, W, teams, pools, R, minDist, { fixed: true });
     ch.order.forEach((c, k) => {
       const prev = ch.order[k - 1];
-      c.link = k === 0 ? null : ch.links[k] ? { dist: ch.links[k].dist, gap: false, pts: ch.links[k].pts }
-        : { gap: true, dist: Math.hypot(prev.v.pts[prev.v.pts.length - 1][0] - c.v.pts[0][0], prev.v.pts[prev.v.pts.length - 1][1] - c.v.pts[0][1]) };
+      const air = k === 0 ? 0 : Math.hypot(prev.v.pts[prev.v.pts.length - 1][0] - c.v.pts[0][0], prev.v.pts[prev.v.pts.length - 1][1] - c.v.pts[0][1]);
+      c.link = k === 0 ? null : ch.links[k] ? { dist: ch.links[k].dist, gap: false, pts: ch.links[k].pts, air }
+        : { gap: true, dist: air, air, why: ch.notes && ch.notes[k] };
       imp.order.push(c);
     });
     imp.info.push({ place: placeLabel(p), gaps: ch.gaps, n: ch.order.length });
   }
+  // Hinweise zum Übergang (keine Sperren: importierte Trails wurden bewusst so geplant)
+  imp.order.forEach((c, k) => {
+    const L = c.link;
+    if (!L) return;
+    const air = Math.round(L.air), parts = [];
+    if (air < 75) parts.push(`Ziel und Start nur ${air} m auseinander (Empfehlung mind. 75 m)`);
+    if (!L.gap) {
+      if (L.dist > 250) parts.push('langer Übergang (über 250 m)');
+      if (air > 0 && L.dist > 3 * air) parts.push(`Umweg: ${(L.dist / air).toFixed(1).replace('.', ',')}-fache Luftlinie`);
+    } else {
+      const nums = ((L.why && L.why.by) || []).map(x => imp.order.indexOf(x) + 1).filter(n => n > 0)
+        .map(n => (n === k + 1 ? `den weiteren Verlauf von Trail ${n}` : `Trail ${n}`)).join(', ');
+      parts.unshift(!L.why ? 'kein zulässiger Fußweg' : L.why.why === 'start' ? `Start von Trail ${k + 1} nur über ${nums || 'einen späteren Trail'} erreichbar`
+        : L.why.why === 'ziel' ? `vom Ziel von Trail ${k} führt jeder Weg über ${nums || 'einen späteren Trail'}` : 'kein Weg unter 1,5 km, der keinen späteren Trail kreuzt oder benutzt');
+    }
+    L.note = parts.join('; ');
+  });
   // Abstand zwischen allen Paaren (auch über Ortsgrenzen), gemessen auf der Linie
   const near = (a, b) => {
     const ob = Pruefung.obstacle({ ll: b.ll }, a.G.fromLatLon).v.pts;
@@ -2815,9 +2961,8 @@ function drawImportPreview() {
 function transitionText(k) {
   const c = imp.order[k], prev = imp.order[k - 1];
   if (!c.link) return { text: prev && prev.place !== c.place ? `Ortswechsel: Beginn der Kette in ${placeLabel(importPlaces().find(p => p.id === c.place) || { id: c.place })}` : 'Beginn der Kette', warn: false };
-  if (!c.link.gap) return { text: `Fußweg ${Math.round(c.link.dist)} m vom Ziel von Trail ${k}`, warn: false };
-  const d = Math.round(c.link.dist);
-  return { text: `Lücke: ${d} m Luftlinie vom Ziel von Trail ${k}, kein passender Fußweg (75–250 m)${d > 250 ? ' – großer Sprung' : ''}`, warn: true };
+  if (!c.link.gap) return { text: `Fußweg ${Math.round(c.link.dist)} m vom Ziel von Trail ${k}${c.link.note ? ' – ' + c.link.note : ''}`, warn: !!c.link.note };
+  return { text: `Lücke: ${Math.round(c.link.dist)} m Luftlinie vom Ziel von Trail ${k}${c.link.note ? ' – ' + c.link.note : ''}`, warn: true };
 }
 
 function renderImport() {
@@ -2938,7 +3083,7 @@ function renderExam() {
         <span class="lay">legen bis <b>${layTime(t.level)}</b></span></div>
       <div class="stats"><span><b>${+t.length}</b> m</span><span><b>${+t.turns}</b> Richtungswechsel</span><span><b>${+t.decisions - +t.turns}</b> zusätzliche Entscheidungsstelle${t.decisions - t.turns === 1 ? '' : 'n'}</span><span><b>${+t.crossings}</b> Kreuzung${t.crossings === 1 ? '' : 'en'}</span><span>Suchzeit <b>${lv.searchMin}</b> min</span></div>
       <div class="streets"></div>
-      ${t.link === undefined ? '' : `<div class="streets">${t.link === null ? 'Beginn der Kette' : t.link.gap ? `<b style="color:var(--warn)">Lücke:</b> neuer Abschnitt, ${+t.link.dist} m Luftlinie vom vorigen Ziel` : `Weg vom vorigen Ziel: <b>${+t.link.dist} m</b>`}</div>`}
+      ${t.link === undefined ? '' : `<div class="streets">${t.link === null ? 'Beginn der Kette' : t.link.gap ? `<b style="color:var(--warn)">Lücke:</b> neuer Abschnitt, ${+t.link.dist} m Luftlinie vom vorigen Ziel` : `Weg vom vorigen Ziel: <b>${+t.link.dist} m</b>`}${t.link && t.link.note ? ` <span style="color:var(--warn)">· ${esc(t.link.note)}</span>` : ''}</div>`}
       ${t.imported ? `<div class="warnbox"><b>Importiert${t.name ? ': ' + esc(t.name) : ''}.</b> Die Strecke ist unverändert aus der GPX-Datei. Die Wegbeschreibung ist aus dem Wegenetz abgeleitet und ungefähr.${(t.issues || []).length ? '<ul>' + t.issues.map(x => `<li>${esc(x)}</li>`).join('') + '</ul>' : ''}</div>` : t.harder ? `<div class="warnbox"><b>Hinweis:</b> ${esc(t.harder)}. PO-konform und zulässig; an diesen Stellen könnte der Hund anders abbiegen. Beim Abfahren ansehen.</div>` : ''}
       <details class="checks steps-box"><summary>Trailverlauf: ${t.steps.length} Schritte</summary><ol class="steps"></ol></details>
       <label class="check exam-check"><input type="checkbox"${t.checked ? ' checked' : ''}> geprüft (abgefahren)</label>
