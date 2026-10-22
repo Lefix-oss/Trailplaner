@@ -250,3 +250,94 @@ test('replacePlaceTrails hält die Trails eines Orts zusammen (Kette bleibt ein 
   assert.deepEqual(r.trails.map(t => t.place), ['A', 'B', 'B', 'A']);
   assert.deepEqual(r.assign, [{ team: 'Anna mit Luna', vp: 'VP1' }, { team: '', vp: '' }, { team: '', vp: '' }, { team: '', vp: 'VP3' }]);
 });
+
+// ---------- GPX-Import ----------
+const gpx = body => `<?xml version="1.0"?><gpx version="1.1">${body}</gpx>`;
+
+test('parseGpx liest Segmente, Routen, beliebige Attributreihenfolge und ignoriert Wegpunkte und Kommentare', () => {
+  const t = gpx(`<!-- <trkpt lat="1" lon="1"/> --><wpt lat="2" lon="2"><name>Weg</name></wpt>
+    <trk><name>Strecke A</name><trkseg><trkpt lat="49.6" lon="9.9"><ele>250</ele></trkpt><trkpt lon='9.901' lat='49.601'/></trkseg>
+    <trkseg><trkpt lat="49.602" lon="9.902"/></trkseg></trk>`);
+  const r = Pruefung.parseGpx(t);
+  assert.deepEqual(r.ll, [[49.6, 9.9], [49.601, 9.901], [49.602, 9.902]]);
+  assert.equal(r.name, 'Strecke A');
+  assert.equal(Pruefung.parseGpx(gpx('<rte><rtept lat="49.6" lon="9.9"/><rtept lat="49.7" lon="9.9"/></rte>')).ll.length, 2);
+});
+
+test('parseGpx gibt den Namen nur als Text zurück', () => {
+  const r = Pruefung.parseGpx(gpx('<trk><name>&lt;img onerror=x&gt; &amp; Co</name><trkseg><trkpt lat="49.6" lon="9.9"/><trkpt lat="49.7" lon="9.9"/></trkseg></trk>'));
+  assert.equal(r.name, '<img onerror=x> & Co');
+});
+
+test('parseGpx lehnt unbrauchbare Dateien ab', () => {
+  const two = '<trkpt lat="49.6" lon="9.9"/><trkpt lat="49.7" lon="9.9"/>';
+  assert.throws(() => Pruefung.parseGpx('kein xml'), /GPX/);
+  assert.throws(() => Pruefung.parseGpx(gpx('<trk><trkseg></trkseg></trk>')), /Punkte/);
+  assert.throws(() => Pruefung.parseGpx(gpx('<trkpt lat="49.6" lon="9.9"/>')), /Punkte/);
+  assert.throws(() => Pruefung.parseGpx(gpx(two + '<trkpt lat="95" lon="9.9"/>')), /Koordinate/);
+  assert.throws(() => Pruefung.parseGpx(gpx(two + '<trkpt lat="abc" lon="9.9"/>')), /Koordinate/);
+  assert.throws(() => Pruefung.parseGpx(gpx('<trkpt lat="49.6" lon="9.9"/>'.repeat(5001))), /Punkte/);
+  assert.throws(() => Pruefung.parseGpx(gpx(' '.repeat(1e6 + 1))), /groß/);
+});
+
+test('placeFor findet den Ort, dessen Kreis Start und Ziel enthält', () => {
+  const places = [
+    { id: 'A', center: { lat: 49.6, lon: 9.9 }, radius: 1000 },
+    { id: 'B', center: { lat: 49.6, lon: 9.92 }, radius: 1000 },
+    { id: 'C', center: null, radius: 1000 },
+  ];
+  assert.equal(Pruefung.placeFor(places, [49.6, 9.9], [49.601, 9.901]).id, 'A');
+  assert.equal(Pruefung.placeFor(places, [49.6, 9.92], [49.6, 9.921]).id, 'B');
+  assert.equal(Pruefung.placeFor(places, [49.6, 9.908], [49.6, 9.909]).id, 'A');   // beide Kreise passen: A hat die nähere Mitte zum Start
+  assert.equal(Pruefung.placeFor(places, [49.6, 9.9], [49.7, 9.9]), null);        // Ziel außerhalb
+  assert.equal(Pruefung.placeFor(places, [50, 10], [50, 10.001]), null);
+});
+
+test('parseExam übernimmt imported und name und prüft sie', () => {
+  const base = () => ({ format: Pruefung.FORMAT, version: 2, places: [{ id: 'A', center: { lat: 49.6, lon: 9.9 }, radius: 1000 }],
+    trails: [{ level: 'MT-I', place: 'A', ll: [[49.6, 9.9], [49.601, 9.9]], length: 300, imported: true, name: 'Strecke' }] });
+  const ok = Pruefung.parseExam(JSON.stringify(base()));
+  assert.equal(ok.trails[0].imported, true);
+  assert.equal(ok.trails[0].name, 'Strecke');
+  const bad = base(); bad.trails[0].name = { x: 1 };
+  assert.throws(() => Pruefung.parseExam(JSON.stringify(bad)), /beschädigt/);
+  const bad2 = base(); bad2.trails[0].imported = 'ja';
+  assert.throws(() => Pruefung.parseExam(JSON.stringify(bad2)), /beschädigt/);
+});
+
+test('parseExam prüft die Befunde (issues) importierter Trails', () => {
+  const base = issues => JSON.stringify({ format: Pruefung.FORMAT, version: 2, places: [{ id: 'A', center: { lat: 49.6, lon: 9.9 }, radius: 1000 }],
+    trails: [{ level: 'MT-I', place: 'A', ll: [[49.6, 9.9], [49.601, 9.9]], length: 300, imported: true, issues }] });
+  assert.deepEqual(Pruefung.parseExam(base(['Länge: 250 m'])).trails[0].issues, ['Länge: 250 m']);
+  assert.throws(() => Pruefung.parseExam(base('x')), /beschädigt/);
+  assert.throws(() => Pruefung.parseExam(base([{ a: 1 }])), /beschädigt/);
+});
+
+test('Prüfungsstand mit importiertem Trail behält die Linie Punkt für Punkt', () => {
+  const ll = [[49.600001, 9.900002], [49.6005, 9.9011], [49.60123, 9.90123]];
+  const ex = { format: Pruefung.FORMAT, version: 2, places: [{ id: 'A', center: { lat: 49.6, lon: 9.9 }, radius: 1000 }],
+    trails: [{ level: 'MT-I', place: 'A', ll, length: 300, imported: true, name: 'Strecke', issues: [] }] };
+  const back = Pruefung.parseExam(Pruefung.serializeExam(ex));
+  assert.deepEqual(back.trails[0].ll, ll);
+  assert.equal(back.trails[0].imported, true);
+});
+
+test('parseGpx bleibt bei präparierten Dateien schnell (kein Einfrieren)', () => {
+  const evil = [
+    '<gpx>' + '<trkpt'.repeat(160000),
+    '<gpx>' + '<!--'.repeat(240000),
+    '<gpx>' + '<wpt '.repeat(150000),
+    '<gpx><trkpt lat="1" lon="1"/><trkpt lat="1" lon="2"/>' + '<trk>'.repeat(150000),
+    '<gpx>' + '<trkpt lat="1" lon="1" '.repeat(40000) + '>',
+  ];
+  for (const t of evil) {
+    const t0 = Date.now();
+    try { Pruefung.parseGpx(t); } catch { /* Ablehnen ist erlaubt */ }
+    assert.ok(Date.now() - t0 < 500, `zu langsam: ${Date.now() - t0} ms`);
+  }
+});
+
+test('parseGpx nimmt bei Track und Route nur den Track', () => {
+  const r = Pruefung.parseGpx('<gpx><rte><rtept lat="1" lon="1"/><rtept lat="1" lon="2"/></rte><trk><trkseg><trkpt lat="2" lon="2"/><trkpt lat="2" lon="3"/></trkseg></trk></gpx>');
+  assert.deepEqual(r.ll, [[2, 2], [2, 3]]);
+});

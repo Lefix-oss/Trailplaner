@@ -166,6 +166,19 @@ ol.steps li.end .t { font-weight: 600; }
 .exam-check { padding: 10px 14px 0; font-weight: 600; }
 .exam-bar { margin-top: 10px; flex-wrap: wrap; gap: 6px; }
 .reset-btn { margin-top: 8px; }
+/* GPX-Import */
+.imp { border: 1px solid var(--line); border-radius: 8px; background: var(--soft); padding: 12px; display: grid; gap: 10px; }
+.imp[hidden] { display: none; }
+.imp h2 { margin: 0; }
+.imp-drop { border: 2px dashed var(--line); border-radius: 8px; padding: 14px; text-align: center; color: var(--muted); font-size: 14px; }
+.imp-drop.over { border-color: var(--accent); color: var(--ink); }
+.imp-item { display: grid; grid-template-columns: auto 1fr; gap: 4px 8px; padding: 8px 0; border-top: 1px solid var(--line); font-size: 14px; }
+.imp-item .meta { color: var(--muted); font-size: 13px; }
+.imp-item ul { margin: 2px 0 0; padding-left: 18px; font-size: 13px; }
+.imp-item .st-ok { color: var(--ok); } .imp-item .st-warn { color: var(--warn); } .imp-item .st-bad { color: var(--bad); }
+.imp-sum { font-size: 14px; }
+.imp-conf { font-size: 13px; color: var(--warn); margin: 0; padding-left: 18px; }
+.imp-actions { display: flex; gap: 6px; flex-wrap: wrap; }
 /* Radar während der Planung: nur transform/opacity, damit es auch bei voller Rechenlast flüssig läuft */
 .radar { position: relative; border-radius: 50%; pointer-events: none; }
 .radar::before, .radar::after { content: ''; position: absolute; inset: 0; border-radius: 50%; border: 3px solid var(--radar); animation: radar-ping 1.8s ease-out infinite; }
@@ -310,9 +323,13 @@ details.privacy p { margin: 6px 0 0; }
         <button id="examSave" class="small" type="button">Stand speichern …</button>
         <button id="examOpen" class="small" type="button">Gespeicherten Stand öffnen …</button>
         <input id="examFile" type="file" accept=".json,application/json" hidden>
+        <button id="importBtn" class="small" type="button">Import Trails …</button>
+        <input id="importFile" type="file" accept=".gpx,application/gpx+xml,application/xml,text/xml" multiple hidden>
       </div>
       <p id="status" class="status" role="status"></p>
     </section>
+
+    <section id="importPanel" class="imp" hidden aria-label="Trails aus GPX-Dateien importieren"></section>
 
     <section id="results" class="results-host">
       <div class="empty"><b>So geht's:</b> Ort wählen, Teams anlegen, „Trails planen“ tippen. Du bekommst bis zu fünf komplette Vorschläge, in denen sich die Trails nicht kreuzen. Jeder Trail wird gegen die PO geprüft.</div>
@@ -812,12 +829,18 @@ const Planner = (() => {
   // Bundes- und Staatsstraßen quert nur MT-III; Wohn- und Kreisstraßen dürfen alle Stufen queren
   const crossOk = (lvl, G, node) => lvl.allowed.includes('busy') || G.nodeCls.get(node) !== 'busy';
 
+  // Stufe allein nach der Länge (±10 %); die Bereiche überlappen nicht
+  function levelByLength(len) {
+    return Object.keys(LEVELS).find(k => Math.abs(len - LEVELS[k].length) <= LEVELS[k].length * LENGTH_TOL) || null;
+  }
+
   function validate(G, tr, mode = tr.mode || 'training') {
     const lvl = LEVELS[tr.level];
     const checks = [];
     const add = (ok, label, detail) => checks.push({ ok, label, detail });
-    const pts = trailPts(G, tr);
-    const len = polyLen(pts);
+    // Importierte Strecken (GPX) bringen ihre Geometrie und Länge mit; die Beinfolge dient dann nur der Zuordnung zu Wegen und Kreuzungen
+    const pts = tr.pts || trailPts(G, tr);
+    const geo = polyLen(pts), len = tr.fixedLength || geo;
 
     add(Math.abs(len - lvl.length) <= lvl.length * LENGTH_TOL, `Länge ca. ${lvl.length} m`, `${Math.round(len)} m`);
 
@@ -833,7 +856,7 @@ const Planner = (() => {
       let share;
       if (G.settlementAreas) {
         const cum = cumLens(pts); let hit = 0, tot = 0;
-        for (let d = 0; d <= len; d += 5) { tot++; if (G.inSettlement(pointAt(pts, cum, d))) hit++; }
+        for (let d = 0; d <= geo; d += 5) { tot++; if (G.inSettlement(pointAt(pts, cum, d))) hit++; }
         share = hit / tot;
       } else share = tr.legs.reduce((a, l) => a + (l.d1 - l.d0) * G.segs[l.seg].inside, 0) / Math.max(1, len);
       const pct = Math.round(TERRAIN[tmode] * 100);
@@ -910,7 +933,7 @@ const Planner = (() => {
 
   // ---------- Verlaufsplan ----------
   function describe(G, tr) {
-    const pts = trailPts(G, tr);
+    const pts = tr.pts || trailPts(G, tr);
     const steps = [];
     const leg0 = tr.legs[0];
     const o0 = oriented(G.segs[leg0.seg], leg0.fwd);
@@ -945,6 +968,8 @@ const Planner = (() => {
     const end = pts[pts.length - 1];
     const nd = G.nearestDrive(end, 60);
     steps.push({ at: Math.round(acc), kind: 'end', text: `Ziel: Versteckperson auf ${curName}. Abholung mit dem Auto über ${nd.name}` });
+    // Importierte Strecke: Meterangaben von der Beinfolge auf die Länge der Linie umrechnen
+    if (tr.fixedLength && acc > 0) { const k = tr.fixedLength / acc; for (const s of steps) s.at = Math.round(s.at * k); }
     return steps;
   }
   // Wegnamen an Start und Ende (für die Kopfzeile des Prüfungsbogens)
@@ -959,6 +984,64 @@ const Planner = (() => {
     return x < 60 ? `leicht ${s}` : x > 135 ? `scharf ${s}` : s;
   }
   const cap = s => s.charAt(0).toUpperCase() + s.slice(1);
+
+  // ---------- Fremde Strecke (GPX) dem Wegenetz zuordnen ----------
+  // Die Zuordnung dient nur der Prüfung und der Wegbeschreibung; die Strecke selbst bleibt unverändert.
+  // pts: projizierte Punkte (G.fromLatLon), W: walkGraph(G). Ergebnis { legs, far, maxOff } oder null;
+  // far = Anteil der Linie, der mehr als 10 m neben bekannten Wegen liegt
+  function matchTrack(G, W, pts) {
+    if (!G._edgeSeg) { G._edgeSeg = []; for (const sg of G.segs) for (let k = 0; k + 1 < sg.nodes.length; k++) G._edgeSeg.push({ seg: sg, k }); }
+    const dense = [pts[0]];
+    for (let i = 1; i < pts.length; i++) {
+      const n = Math.max(1, Math.ceil(dist(pts[i - 1], pts[i]) / 3));
+      for (let j = 1; j <= n; j++) dense.push([pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * j / n, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * j / n]);
+    }
+    let farCount = 0, maxOff = 0;
+    const seq = [];
+    for (const p of dense) {
+      const s = snapEdge(W, p); if (!s) return null;
+      const e = s.e, off = dist(p, [e.pa[0] + s.t * (e.pb[0] - e.pa[0]), e.pa[1] + s.t * (e.pb[1] - e.pa[1])]);
+      if (off > 10) farCount++;
+      maxOff = Math.max(maxOff, off);
+      const { seg, k } = G._edgeSeg[e.id], pos = seg.cum[k] + s.t * e.len, last = seq[seq.length - 1];
+      if (last && last.seg === seg.id) last.to = pos; else seq.push({ seg: seg.id, from: pos, to: pos });
+    }
+    // kurze Zwischenstücke (unter 8 m, Sprünge an Kreuzungen) fallen weg, gleiche Segmente werden wieder verbunden
+    const clean = [];
+    for (const [k, s] of seq.entries()) {
+      if (Math.abs(s.to - s.from) < 8 && clean.length && k < seq.length - 1) continue;   // erstes und letztes Stück bleiben immer
+      if (clean.length && clean[clean.length - 1].seg === s.seg) clean[clean.length - 1].to = s.to; else clean.push({ ...s });
+    }
+    const legs = clean.map((s, i) => {
+      const L = G.segs[s.seg].len, fwd = s.to >= s.from;
+      let a = Math.min(s.from, s.to), b = Math.max(s.from, s.to);
+      if (i > 0 && a < 8) a = 0;
+      if (i < clean.length - 1 && b > L - 8) b = L;
+      if (i > 0 && i < clean.length - 1) { a = 0; b = L; }
+      return fwd ? { seg: s.seg, fwd, d0: a, d1: b } : { seg: s.seg, fwd, d0: L - b, d1: L - a };
+    });
+    return legs.length ? { legs, far: farCount / dense.length, maxOff } : null;
+  }
+  // Kandidat wie aus pool(), aber aus einer festen Strecke: Geometrie und Länge der Linie, Regelprüfung über die Zuordnung.
+  // ll: [[lat, lon], …] (Original, bleibt in c.ll). matched = false: keine Zuordnung möglich, dann ohne Regelprüfung
+  function trackCandidate(G, W, ll, level, o = {}) {
+    const pts = ll.map(G.fromLatLon), len = polyLen(pts);
+    let m = null, v = null;
+    try { m = matchTrack(G, W, pts); } catch { m = null; }
+    const farShare = m ? m.far : 1;
+    if (m && m.far > 0.6) m = null;   // der größte Teil liegt abseits aller Wege: keine brauchbare Zuordnung
+    const tr = { level, legs: m ? m.legs : [], mode: 'pruefung', pts, fixedLength: len };
+    if (m) { try { v = validate(G, tr); } catch { v = null; } }
+    const matched = !!(m && v);
+    if (!v) v = { ok: false, targetOk: false, excess: 0, checks: [], length: len, turns: 0, decisions: 0, extraDecisions: 0, crossings: 0, pickup: null, pts };
+    const segSet = new Set(), nodeSet = new Set();
+    if (matched) for (const l of tr.legs) { segSet.add(l.seg); for (const n of G.segs[l.seg].nodes) nodeSet.add(n); }
+    const smp = samples(pts), xs = smp.map(p => p[0]), ys = smp.map(p => p[1]);
+    return {
+      id: o.id || level + '#imp', tr, v, segSet, nodeSet, samples: smp, bbox: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)],
+      ll, matched, far: farShare, maxOff: m ? m.maxOff : null, imported: true, name: o.name || '',
+    };
+  }
 
   // ---------- Abstand zwischen Trails ----------
   function samples(pts) {
@@ -1233,6 +1316,8 @@ const Planner = (() => {
   function chain(G, W, teams, pools, R, minDist, opts = {}) {
     const minLen = opts.minLen ?? 75, maxLen = opts.maxLen ?? 250, minAir = opts.minAir ?? 75;
     const sliceMs = opts.ms ?? 1500, K = opts.k ?? 8, maxBudget = opts.maxGaps ?? 3, mode = opts.mode || 'pruefung', obstacles = opts.obstacles || [];
+    // fixed (GPX-Import): die Trails stehen fest, es wird nur geordnet: nichts würfeln, nichts aussortieren, Konflikte untereinander nur dulden
+    const fixed = !!opts.fixed;
     const seq = teams.map((t, i) => ({ t, i })).sort((a, b) => LEVEL_ORDER.indexOf(a.t.level) - LEVEL_ORDER.indexOf(b.t.level) || a.i - b.i);
     const n = seq.length;
     const result = (order, links, gaps) => ({ order, links, gaps, teams: seq.map(x => x.t), index: seq.map(x => x.i) });
@@ -1258,6 +1343,7 @@ const Planner = (() => {
     let uid = 0;
     // Kandidaten der Stufe lv, die in Fußweite (ohne Sperren) hinter dem Ziel von prev starten, mit ihrem Fußweg
     const nearList = memo((prev, lv) => {
+      if (fixed) return [];
       const segIds = reach(endPt(prev));
       const starts = G._starts[lv].filter(sg => segIds.has(sg.id));
       if (!starts.length) return [];
@@ -1272,7 +1358,7 @@ const Planner = (() => {
       }
       return out;
     });
-    const general = seq.map(x => (pools[x.t.level] ? pools[x.t.level].list : []).slice(0, 25));
+    const general = seq.map(x => (pools[x.t.level] ? pools[x.t.level].list : []).slice(0, fixed ? undefined : 25));
     // Abstand zwischen einem Fußweg und einem Trail (Polylinien)
     function walkClear(wpts, c) {
       for (let i = 1; i < wpts.length; i++) for (let k = 1; k < c.v.pts.length; k++) if (segSegDist(wpts[i - 1], wpts[i], c.v.pts[k - 1], c.v.pts[k]) < minDist) return false;
@@ -1289,14 +1375,14 @@ const Planner = (() => {
         if (pos === n) { best = result(chosen.slice(), walks.slice(), gaps); return; }
         const lv = seq[pos].t.level;
         const near = pos > 0 ? nearList(chosen[pos - 1], lv) : [];
-        const options = pos === 0 ? general[pos] : (gaps < budget ? near.concat(general[pos]) : near);
+        const options = pos === 0 || fixed ? general[pos] : (gaps < budget ? near.concat(general[pos]) : near);
         for (const c of options) {
           if (best || stop) return;
-          if (chosen.some(o => o === c || !compatible(c, o, minDist))) continue;
+          if (chosen.some(o => o === c || (!fixed && !compatible(c, o, minDist)))) continue;
           // bisherige Fußwege der Gruppe dürfen diesen später gelaufenen Trail nicht berühren
           if (walks.some(w => w && !walkClear(w.pts, c))) continue;
           let w = null;
-          if (pos > 0 && near.includes(c)) {
+          if (pos > 0 && (fixed || near.includes(c))) {
             const prev = chosen[pos - 1];
             if (dist(endPt(prev), c.v.pts[0]) >= minAir) {
               const r = walkPath(G, W, endPt(prev), c.v.pts[0], [bStart(c)], maxLen);
@@ -1310,6 +1396,12 @@ const Planner = (() => {
         }
       })(0, 0);
       if (best) return best;
+    }
+    // Feste Trails: Rückfall ohne Kette, nach Stufe und Reihenfolge im Vorrat; jeder Übergang ist eine Lücke
+    if (fixed) {
+      const used = new Set();
+      const order = seq.map(x => { const c = (pools[x.t.level] ? pools[x.t.level].list : []).find(k => !used.has(k)); if (c) used.add(c); return c; }).filter(Boolean);
+      return result(order, new Array(order.length).fill(null), Math.max(0, order.length - 1));
     }
     // Keine Kette mit wenigen Lücken: wie bisher planen, jeder Übergang ist eine Lücke
     const p = plans(G, seq.map(x => x.t), pools, R, minDist, 1);
@@ -1379,7 +1471,7 @@ const Planner = (() => {
     if (s.blocked) return false;
     return true;
   }
-  return { LEVELS, buildGraph, prepare, setTerrain, pool, plans, alternatives, walkGraph, blockedEdges, walkPath, chain, replacement, reverseTrail, similar, snapEdge, validate, describe, endpointNames, toGPX, rng, trailPts, compatible };
+  return { LEVELS, buildGraph, prepare, setTerrain, pool, plans, alternatives, walkGraph, blockedEdges, walkPath, chain, replacement, reverseTrail, similar, snapEdge, validate, describe, endpointNames, toGPX, rng, trailPts, compatible, levelByLength, matchTrack, trackCandidate };
 })();
 if (typeof module !== 'undefined') module.exports = Planner;
 
@@ -1518,6 +1610,60 @@ const Pruefung = (() => {
     return `[out:json][timeout:60];(way["highway"](${bbox});way["landuse"~"^(residential|retail|commercial)$"](${bbox});relation["landuse"~"^(residential|retail|commercial)$"](${bbox});node["barrier"](${bbox}););out body geom;`;
   }
 
+  // ---------- GPX-Import ----------
+  const GPX_LIMITS = { bytes: 1e6, files: 50, points: 5000 };
+  // Kleiner eigener Leser: nur Breite und Länge der Trackpunkte (trkpt) und Routenpunkte (rtept) sowie der Name als Text
+  function parseGpx(text) {
+    const s = String(text || '');
+    if (s.length > GPX_LIMITS.bytes) throw new Error('Die Datei ist zu groß (höchstens 1 MB).');
+    if (!/<gpx\b/i.test(s)) throw new Error('Das ist keine GPX-Datei.');
+    // Ein linearer Durchlauf mit indexOf (keine Regex über große Textstücke, sonst friert eine präparierte Datei die Seite ein):
+    // Kommentare, CDATA und Wegpunkte werden übersprungen
+    const isTag = (tag, nm) => tag.startsWith('<' + nm) && /[\s>\/]/.test(tag.charAt(nm.length + 1));
+    const found = { trkpt: [], rtept: [] };
+    let name = '', inRoute = false, i = 0;
+    while ((i = s.indexOf('<', i)) >= 0) {
+      if (s.startsWith('<!--', i)) { const j = s.indexOf('-->', i + 4); if (j < 0) break; i = j + 3; continue; }
+      if (s.startsWith('<![CDATA[', i)) { const j = s.indexOf(']]>', i + 9); if (j < 0) break; i = j + 3; continue; }
+      const end = s.indexOf('>', i); if (end < 0) break;
+      const tag = end - i > 300 ? s.slice(i, i + 300) : s.slice(i, end + 1);   // längere Tags sind unbrauchbar
+      if (isTag(tag, 'wpt')) {
+        if (s.charAt(end - 1) === '/') { i = end + 1; continue; }
+        const j = s.indexOf('</wpt>', end); if (j < 0) break; i = j + 6; continue;
+      }
+      if (isTag(tag, 'trk') || isTag(tag, 'rte')) inRoute = true;
+      else if (inRoute && !name && tag === '<name>') {
+        const j = s.indexOf('</name>', end);
+        if (j >= 0) { name = s.slice(end + 1, Math.min(j, end + 400)).replace(/&lt;/g, '<').replace(/&gt;/g, '>').replace(/&quot;/g, '"').replace(/&apos;/g, "'").replace(/&amp;/g, '&').replace(/\s+/g, ' ').trim().slice(0, 80); i = j + 7; continue; }
+      } else for (const k of ['trkpt', 'rtept']) {
+        if (isTag(tag, k)) {
+          found[k].push(tag);
+          if (found[k].length > GPX_LIMITS.points) throw new Error(`Die Strecke hat zu viele Punkte (mehr als ${GPX_LIMITS.points}).`);
+        }
+      }
+      i = end + 1;
+    }
+    const tags = found.trkpt.length ? found.trkpt : found.rtept;   // Track hat Vorrang vor Route (nicht beide mischen)
+    if (tags.length < 2) throw new Error('Die Datei enthält keine Strecke (weniger als 2 Punkte).');
+    const attr = (tag, re) => { const m = re.exec(tag); return m && /^[+-]?\d+(\.\d+)?$/.test(m[2].trim()) ? +m[2] : NaN; };
+    const ll = tags.map(t => [attr(t, /\blat\s*=\s*(["'])(.*?)\1/), attr(t, /\blon\s*=\s*(["'])(.*?)\1/)]);
+    if (!ll.every(p => Math.abs(p[0]) <= 90 && Math.abs(p[1]) <= 180)) throw new Error('Die Datei enthält eine ungültige Koordinate.');
+    return { name, ll };
+  }
+  // Ort, dessen Suchkreis Start und Ziel enthält; bei mehreren der mit der nächsten Mitte zum Start
+  function placeFor(places, startLL, endLL) {
+    const m = (a, b) => Math.hypot((a[0] - b[0]) * 110574, (a[1] - b[1]) * 111320 * Math.cos(a[0] * Math.PI / 180));
+    let best = null, bd = Infinity;
+    for (const p of places) {
+      if (!p.center) continue;
+      const c = [p.center.lat, p.center.lon], r = +p.radius || 1200;
+      if (m(c, startLL) > r || m(c, endLL) > r) continue;
+      const d = m(c, startLL);
+      if (d < bd) { bd = d; best = p; }
+    }
+    return best;
+  }
+
   function serializeExam(exam) { return JSON.stringify(exam, null, 1); }
 
   function parseExam(text) {
@@ -1558,6 +1704,9 @@ const Pruefung = (() => {
         if (typeof t.link !== 'object' || !num(t.link.dist) || (t.link.ll != null && !(Array.isArray(t.link.ll) && t.link.ll.every(pt)))) throw bad();
       }
       if (t.steps !== undefined && !t.steps.every(s => s && typeof s === 'object' && num(s.at) && (s.options === undefined || num(s.options)) && typeof s.text === 'string' && typeof s.kind === 'string')) throw bad();
+      if (t.imported !== undefined && typeof t.imported !== 'boolean') throw bad();
+      if (t.name !== undefined && (typeof t.name !== 'string' || t.name.length > 80)) throw bad();
+      if (t.issues !== undefined && !(Array.isArray(t.issues) && t.issues.length <= 20 && t.issues.every(x => typeof x === 'string' && x.length <= 300))) throw bad();
       if (!t.steps) t.steps = [];
       if (typeof t.checked !== 'boolean') t.checked = false;
       if (typeof t.harder !== 'string') t.harder = '';
@@ -1570,7 +1719,7 @@ const Pruefung = (() => {
     return ex;
   }
 
-  return { FORMAT, VERSION, LEVEL_KEYS, PLACE_IDS, parseNames, splitTeam, draw, setCell, obstacle, shareText, placeOf, mergePlaces, replacePlaceTrails, osmKey, osmFresh, osmBBox, findExtract, overpassQuery, placeChoices, serializeExam, parseExam };
+  return { FORMAT, VERSION, LEVEL_KEYS, PLACE_IDS, parseNames, splitTeam, draw, setCell, obstacle, shareText, placeOf, mergePlaces, replacePlaceTrails, osmKey, osmFresh, osmBBox, findExtract, overpassQuery, placeChoices, serializeExam, parseExam, GPX_LIMITS, parseGpx, placeFor };
 })();
 if (typeof module !== 'undefined') module.exports = Pruefung;
 </script>
@@ -1588,7 +1737,7 @@ const store = {
 const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946], contact: '' };
 $('#privacyWho').textContent = CLUB.name + (CLUB.contact ? ', Kontakt: ' + CLUB.contact : '');
 // Versionsnummer: jede Änderung zählt um 0.1 hoch (V1.0 … V1.9, dann V2.0 …); Änderungen stehen in CHANGELOG.md
-const APP_VERSION = '1.7';
+const APP_VERSION = '1.8';
 document.getElementById('appVersion').textContent = 'V' + APP_VERSION;
 const saved = store.get();
 function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }
@@ -1630,7 +1779,7 @@ function renderMode() {
 }
 document.querySelectorAll('[data-mode]').forEach(b => b.addEventListener('click', () => {
   if (planMode === b.dataset.mode) return;
-  planMode = b.dataset.mode; invalidate(); persist(); renderMode();
+  planMode = b.dataset.mode; invalidate(); persist(); renderMode(); closeImport();
   if (planMode === 'pruefung' && state.exam) applyExam(state.exam, true); else renderResults();
 }));
 renderMode();
@@ -2152,6 +2301,7 @@ function pointAtDist(pts, d) {
 // ---------- Prüfungsablauf ----------
 // Ein geplanter Trail wird eingefroren: danach zählt nur noch dieser Schnappschuss, nie mehr der OSM-Graph
 function snapshot(c) {
+  if (c.imported) return snapshotImported(c);
   const G = c.G, v = Planner.validate(G, c.tr), names = Planner.endpointNames(G, c.tr);
   const soft = v.checks.every(x => x.ok || x.soft) ? v.checks.find(x => x.soft && !x.ok) : null;
   return {
@@ -2159,6 +2309,20 @@ function snapshot(c) {
     level: c.tr.level, ll: c.v.pts.map(p => G.toLatLon(p)), length: Math.round(c.v.length),
     turns: v.turns, decisions: v.decisions, crossings: v.crossings,
     steps: Planner.describe(G, c.tr).map(s => ({ at: s.at, kind: s.kind, text: s.text, options: s.options || 0 })),
+    startStreet: names.start, endStreet: names.end, checked: false, place: c.place,
+    link: c.link === undefined ? undefined : c.link && { dist: Math.round(c.link.dist), gap: !!c.link.gap, ll: c.link.pts ? c.link.pts.map(p => G.toLatLon(p)) : null },
+  };
+}
+// Importierter Trail: gespeichert wird die GPX-Linie unverändert; Kennzahlen und Wegbeschreibung stammen aus der Zuordnung zum Wegenetz
+function snapshotImported(c) {
+  const G = c.G, v = c.v, names = c.matched ? Planner.endpointNames(G, c.tr) : { start: 'unbekannt', end: 'unbekannt' };
+  const soft = c.matched ? v.checks.find(x => x.soft && !x.ok) : null;
+  return {
+    harder: soft ? soft.detail : '', imported: true, name: c.name ? c.name : undefined, issues: (c.issues || []).slice(0, 20).map(s => String(s).slice(0, 300)),
+    level: c.tr.level, ll: c.ll.map(p => [p[0], p[1]]), length: Math.round(v.length),
+    turns: v.turns, decisions: v.decisions, crossings: v.crossings,
+    steps: c.matched ? Planner.describe(G, c.tr).map(s => ({ at: s.at, kind: s.kind, text: s.text, options: s.options || 0 }))
+      : [{ at: 0, kind: 'info', text: 'Keine Wegbeschreibung: Die Strecke ließ sich nicht auf das Wegenetz legen.', options: 0 }],
     startStreet: names.start, endStreet: names.end, checked: false, place: c.place,
     link: c.link === undefined ? undefined : c.link && { dist: Math.round(c.link.dist), gap: !!c.link.gap, ll: c.link.pts ? c.link.pts.map(p => G.toLatLon(p)) : null },
   };
@@ -2234,6 +2398,7 @@ async function openExamFile(file) {
 // Alles auf Anfang: Ort, Teams, Einstellungen, Vorschläge und Prüfungsstand (der Modus bleibt)
 function resetAll() {
   if (!confirm('Alle Eingaben löschen und neu anfangen? Ein nicht als Datei gespeicherter Prüfungsstand geht dabei verloren.')) return;
+  closeImport();
   Object.assign(state, { places: [blankPlace('A')], activePlace: 'A', teams: defaultTeams(), pools: null, plans: [], active: 0, planTeams: null, exam: null, examPools: null, examSeen: [] });
   try { localStorage.removeItem(EXAM_KEY); } catch {}
   $('#placeInput').value = ''; $('#placeList').innerHTML = ''; renderPlaces();
@@ -2257,14 +2422,14 @@ function llAtDist(ll, d) {
   }
   return ll[ll.length - 1];
 }
-function drawExam(fit = false) {
+function drawExam(fit = false, ex = state.exam) {
   trailLayer.clearLayers();
   const bounds = [];
-  state.exam.trails.forEach((t, i) => {
+  ex.trails.forEach((t, i) => {
     const color = COLORS[i % COLORS.length], ll = t.ll;
     bounds.push(...ll);
     L.polyline(ll, { color: '#ffffff', weight: 9, opacity: 0.9 }).addTo(trailLayer);
-    L.polyline(ll, { color, weight: 5, opacity: 1 }).addTo(trailLayer).bindTooltip(`Trail ${i + 1} · ${t.level}${examPlaceSuffix(state.exam, t)} · ${t.length} m`, { sticky: true });
+    L.polyline(ll, { color, weight: 5, opacity: 1 }).addTo(trailLayer).bindTooltip(`Trail ${i + 1} · ${t.level}${examPlaceSuffix(ex, t)} · ${t.length} m`, { sticky: true });
     t.steps.filter(s => s.kind === 'turn').forEach(s => {
       L.marker(llAtDist(ll, s.at), { icon: L.divIcon({ className: '', html: `<div class="lf-mark lf-turn" style="background:${color}"></div>`, iconSize: [12, 12], iconAnchor: [6, 6] }), keyboard: false })
         .bindTooltip(`Trail ${i + 1}, ${s.at} m: ${s.text}`).addTo(trailLayer);
@@ -2350,6 +2515,7 @@ async function replanPlace(pid) {
   const ex = state.exam, place = state.places.find(p => p.id === pid);
   if (!ex || !place) return;
   if (!confirm(`Nur ${placeLabel(place)} neu planen? Trails, Häkchen und Zuteilung dieses Orts gehen verloren, die anderen Orte bleiben.`)) return;
+  if (ex.trails.some(t => t.place === pid && t.imported) && !confirm('Dieser Ort enthält importierte Trails. Sie werden verworfen und durch neu geplante Trails ersetzt. Wirklich fortfahren?')) return;
   const btn = $('#planBtn'); btn.disabled = true;
   try {
     if (!state.teams.some(t => t.place === pid)) { setStatus(`Ort ${pid} hat keine Teams: bei den Teams Ort ${pid} auswählen. Der bisherige Stand bleibt.`, true); return; }
@@ -2367,6 +2533,193 @@ async function replanPlace(pid) {
     setStatus(`Interner Fehler bei der Planung: ${e && e.message ? e.message : e}. Der bisherige Stand bleibt.`, true);
   } finally { btn.disabled = false; radarStop(); }
 }
+// ---------- GPX-Import ----------
+// Trails aus GPX-Dateien (z. B. Mapy.com) einlesen, prüfen, zur Kette ordnen und als Prüfungsstand übernehmen.
+// Die Linien werden nie verändert; die Zuordnung zum Wegenetz dient nur der Regelprüfung und der Wegbeschreibung.
+const imp = { items: [], order: [], info: [], conflicts: [], busy: false, drag: false };
+$('#importBtn').addEventListener('click', () => { if (!imp.busy) { imp.items.length ? showImport() : openImport(); } });
+$('#importFile').addEventListener('change', e => { const f = [...e.target.files]; e.target.value = ''; if (f.length) evaluateFiles(f); });
+function openImport() { imp.items = []; imp.order = []; imp.info = []; imp.conflicts = []; showImport(); }
+function showImport() { $('#importPanel').hidden = false; renderImport(); $('#importPanel').scrollIntoView({ block: 'nearest' }); }
+function closeImport() {
+  if ($('#importPanel').hidden) return;
+  imp.items = []; imp.order = []; imp.info = []; imp.conflicts = [];
+  $('#importPanel').hidden = true; $('#importPanel').innerHTML = '';
+  if (planMode === 'pruefung' && state.exam) drawExam(false); else trailLayer.clearLayers();
+}
+const llDist = (a, b) => L.latLng(a).distanceTo(L.latLng(b));
+const llLength = ll => { let s = 0; for (let i = 1; i < ll.length; i++) s += llDist(ll[i - 1], ll[i]); return s; };
+
+async function evaluateFiles(files) {
+  if (planMode !== 'pruefung' || imp.busy) return;
+  const lim = Pruefung.GPX_LIMITS;
+  if (files.length > lim.files) { setStatus(`Zu viele Dateien: höchstens ${lim.files} auf einmal.`, true); return; }
+  files = files.slice().sort((a, b) => a.name.localeCompare(b.name, 'de', { numeric: true }));
+  imp.busy = true; imp.items = []; imp.order = []; imp.info = []; imp.conflicts = [];
+  $('#importPanel').hidden = false; renderImport(); setStatus('Lese GPX-Dateien …');
+  try {
+    const items = [];
+    for (const f of files) {
+      const it = { name: f.name, route: '', ll: null, level: null, place: null, c: null, status: 'locked', reasons: [], take: false };
+      items.push(it);
+      try {
+        if (f.size > lim.bytes) throw new Error('Die Datei ist zu groß (höchstens 1 MB).');
+        const g = Pruefung.parseGpx(await f.text());
+        it.ll = g.ll; it.route = g.name; it.len = llLength(g.ll);
+      } catch (e) { it.reasons.push(e.message || 'Die Datei lässt sich nicht lesen.'); continue; }
+      it.level = Planner.levelByLength(it.len);
+      if (!it.level) { it.reasons.push(`Länge ${Math.round(it.len)} m passt zu keiner Stufe (MT-I 270–330 m, MT-II 540–660 m, MT-III 900–1100 m).`); continue; }
+      it.place = Pruefung.placeFor(state.places, it.ll[0], it.ll[it.ll.length - 1]);
+      if (!it.place) it.reasons.push('Start und Ziel liegen nicht in einem Ort der Ortsliste: Ort hinzufügen oder Radius vergrößern.');
+    }
+    imp.items = items; renderImport();
+    // Wegenetz je Ort holen und jeden Trail zuordnen und prüfen
+    const usedPlaces = [...new Set(items.filter(i => i.place).map(i => i.place))];
+    radarStart(usedPlaces);
+    const graphs = new Map();
+    try { for (const p of usedPlaces) graphs.set(p.id, await graphFor(p, p.radius)); }
+    catch { setStatus('OpenStreetMap ist gerade nicht erreichbar oder überlastet. Es wurde nichts übernommen; der bisherige Stand bleibt. Bitte in einer Minute noch einmal versuchen.', true); imp.items = []; renderImport(); return; }
+    if (planMode !== 'pruefung' || $('#importPanel').hidden) { imp.items = []; return; }   // Modus gewechselt oder Fenster geschlossen
+    setStatus('Prüfe die Trails gegen die PO …'); await tick();
+    items.forEach((it, k) => {
+      if (!it.place) return;
+      const G = graphs.get(it.place.id);
+      Planner.setTerrain(G, it.place.terrain, $('#allowPaths').checked, $('#avoidLoops').checked, $('#strictTurns').checked);
+      const W = G._walk || (G._walk = Planner.walkGraph(G));
+      const c = Planner.trackCandidate(G, W, it.ll, it.level, { id: `${it.place.id}:imp${k}`, name: it.route });
+      c.G = G; c.place = it.place.id; c.issues = []; it.c = c;
+      const hard = c.v.checks.filter(x => !x.ok && !x.soft), soft = c.v.checks.filter(x => !x.ok && x.soft);
+      if (!c.matched) it.reasons.push('Die Strecke lässt sich nicht auf das Wegenetz legen: keine Regelprüfung möglich.');
+      hard.forEach(x => it.reasons.push(`${x.label}: ${x.detail}`));
+      if (c.matched && c.far > 0.1) it.reasons.push(`Zuordnung zum Wegenetz unsicher: ${Math.round(c.far * 100)} % der Strecke liegen mehr als 10 m neben bekannten Wegen. Die Regelprüfung ist dann ungenau.`);
+      soft.forEach(x => it.reasons.push(`Hinweis: ${x.detail}`));
+      it.status = !c.matched || hard.length ? 'bad' : (c.far > 0.1 || soft.length ? 'warn' : 'ok');
+      it.take = true;
+      c.issues = it.reasons.filter(r => !r.startsWith('Hinweis:'));   // Befunde für Trailkarte und gespeicherten Stand
+    });
+    buildImportChain();
+    const locked = items.filter(i => i.status === 'locked').length;
+    setStatus(`${items.length} Datei${items.length === 1 ? '' : 'en'} gelesen${locked ? `, davon ${locked} nicht verwendbar` : ''}. Liste prüfen, Haken setzen oder entfernen, dann „Übernehmen“. Die Karte zeigt die Kette.`);
+  } catch (e) {
+    console.error(e);
+    imp.items = []; setStatus(`Interner Fehler beim Import: ${e && e.message ? e.message : e}. Es wurde nichts übernommen.`, true);
+  } finally { imp.busy = false; radarStop(); renderImport(); }
+}
+
+// Kette je Ort aus den angehakten Trails; Konflikte (Abstand) nur melden
+function buildImportChain() {
+  imp.order = []; imp.info = []; imp.conflicts = [];
+  const minDist = +$('#minDist').value, take = imp.items.filter(i => i.take && i.c);
+  const R = Planner.rng(1);
+  for (const p of state.places) {
+    const its = take.filter(i => i.place.id === p.id);
+    if (!its.length) continue;
+    const G = its[0].c.G, W = G._walk;
+    const teams = its.map((i, k) => ({ name: 'T' + k, level: i.level }));
+    const pools = {};
+    for (const i of its) (pools[i.level] = pools[i.level] || { list: [] }).list.push(i.c);
+    const ch = Planner.chain(G, W, teams, pools, R, minDist, { fixed: true });
+    ch.order.forEach((c, k) => {
+      const prev = ch.order[k - 1];
+      c.link = k === 0 ? null : ch.links[k] ? { dist: ch.links[k].dist, gap: false, pts: ch.links[k].pts }
+        : { gap: true, dist: Math.hypot(prev.v.pts[prev.v.pts.length - 1][0] - c.v.pts[0][0], prev.v.pts[prev.v.pts.length - 1][1] - c.v.pts[0][1]) };
+      imp.order.push(c);
+    });
+    imp.info.push({ place: placeLabel(p), gaps: ch.gaps, n: ch.order.length });
+  }
+  // Abstand zwischen allen Paaren (auch über Ortsgrenzen), gemessen auf der Linie
+  const near = (a, b) => {
+    const ob = Pruefung.obstacle({ ll: b.ll }, a.G.fromLatLon).v.pts;
+    let m = Infinity;
+    for (const q of a.samples.concat(a.v.pts)) for (let k = 1; k < ob.length; k++) {
+      const dx = ob[k][0] - ob[k - 1][0], dy = ob[k][1] - ob[k - 1][1], l2 = dx * dx + dy * dy;
+      const t = l2 ? Math.max(0, Math.min(1, ((q[0] - ob[k - 1][0]) * dx + (q[1] - ob[k - 1][1]) * dy) / l2)) : 0;
+      m = Math.min(m, Math.hypot(q[0] - ob[k - 1][0] - t * dx, q[1] - ob[k - 1][1] - t * dy));
+    }
+    return m;
+  };
+  imp.order.forEach(c => { c.conflictIssues = []; });
+  for (let a = 0; a < imp.order.length; a++) for (let b = a + 1; b < imp.order.length; b++) {
+    const A = imp.order[a], B = imp.order[b], d = Math.min(near(A, B), near(B, A));
+    if (d < minDist) {
+      imp.conflicts.push(`Trail ${a + 1} und Trail ${b + 1} liegen nur ${Math.round(d)} m auseinander (eingestellt: mind. ${minDist} m).`);
+      A.conflictIssues.push(`Nur ${Math.round(d)} m Abstand zu Trail ${b + 1} (eingestellt: mind. ${minDist} m)`);
+      B.conflictIssues.push(`Nur ${Math.round(d)} m Abstand zu Trail ${a + 1} (eingestellt: mind. ${minDist} m)`);
+    }
+  }
+  drawImportPreview();
+}
+function drawImportPreview() {
+  if (!imp.order.length) { trailLayer.clearLayers(); return; }
+  imp.order.forEach(c => { c.issues = (c.issues || []).filter(x => !/^Nur \d+ m Abstand/.test(x)).concat(c.conflictIssues || []); });
+  const trails = imp.order.map(snapshot);
+  const ids = new Set(trails.map(t => t.place));
+  drawExam(true, { places: state.places.filter(p => ids.has(p.id)), trails });
+}
+
+function renderImport() {
+  const host = $('#importPanel'); host.innerHTML = '';
+  const h = document.createElement('h2'); h.textContent = 'Import Trails (GPX)'; host.append(h);
+  const drop = document.createElement('div'); drop.className = 'imp-drop';
+  drop.textContent = imp.busy ? 'Werte aus … bitte warten.' : 'GPX-Dateien hierher ziehen oder auswählen (z. B. Export aus Mapy.com).';
+  if (!imp.busy) {
+    const b = mk('Dateien wählen …', () => $('#importFile').click()); drop.append(document.createElement('br'), b);
+    drop.ondragover = e => { e.preventDefault(); drop.classList.add('over'); };
+    drop.ondragleave = () => drop.classList.remove('over');
+    drop.ondrop = e => { e.preventDefault(); drop.classList.remove('over'); const f = [...(e.dataTransfer ? e.dataTransfer.files : [])]; if (f.length) evaluateFiles(f); };
+  }
+  host.append(drop);
+  if (imp.items.length) {
+    const note = document.createElement('p'); note.className = 'hint';
+    note.textContent = 'Die Strecken bleiben unverändert. Rote Trails verletzen eine Regel, bleiben aber in der Liste: Der Haken entscheidet. Zwingend ausgeschlossen sind nur unlesbare Dateien, falsche Längen und Trails außerhalb aller Orte.';
+    host.append(note);
+  }
+  imp.items.forEach(it => {
+    const row = document.createElement('div'); row.className = 'imp-item';
+    const cb = document.createElement('input'); cb.type = 'checkbox'; cb.checked = it.take; cb.disabled = it.status === 'locked' || imp.busy;
+    cb.setAttribute('aria-label', `${it.name} übernehmen`);
+    cb.onchange = () => { it.take = cb.checked; buildImportChain(); renderImport(); };
+    const body = document.createElement('div');
+    const mark = { ok: '✓', warn: '⚠', bad: '✕', locked: '✕' }[it.status];
+    const t1 = document.createElement('div');
+    const sp = document.createElement('b'); sp.className = 'st-' + (it.status === 'locked' ? 'bad' : it.status); sp.textContent = mark + ' ';
+    const pos = imp.order.indexOf(it.c);
+    t1.append(sp, document.createTextNode(it.name + (pos >= 0 ? ` → Trail ${pos + 1}` : '')));
+    const t2 = document.createElement('div'); t2.className = 'meta';
+    t2.textContent = [it.route && it.route !== it.name ? it.route : '', it.len ? Math.round(it.len) + ' m' : '', it.level || '', it.place ? placeLabel(it.place) : ''].filter(Boolean).join(' · ');
+    body.append(t1, t2);
+    if (it.reasons.length) { const ul = document.createElement('ul'); it.reasons.forEach(r => { const li = document.createElement('li'); li.textContent = r; ul.append(li); }); body.append(ul); }
+    row.append(cb, body); host.append(row);
+  });
+  if (imp.items.length && !imp.busy) {
+    const sum = document.createElement('p'); sum.className = 'imp-sum';
+    const n = imp.order.length;
+    sum.textContent = n ? `${n} Trail${n === 1 ? '' : 's'} werden übernommen.${chainStatus(imp.info)}` : 'Es ist kein Trail zum Übernehmen angehakt.';
+    host.append(sum);
+    if (imp.conflicts.length) { const ul = document.createElement('ul'); ul.className = 'imp-conf'; imp.conflicts.forEach(r => { const li = document.createElement('li'); li.textContent = r; ul.append(li); }); host.append(ul); }
+  }
+  const act = document.createElement('div'); act.className = 'imp-actions';
+  const ok = mk(`Übernehmen${imp.order.length ? ` (${imp.order.length})` : ''}`, applyImport); ok.className = 'primary small'; ok.disabled = imp.busy || !imp.order.length;
+  const no = mk('Verwerfen', closeImport); no.disabled = imp.busy;
+  act.append(ok, no); host.append(act);
+}
+function applyImport() {
+  const order = imp.order.slice();
+  if (!order.length || planMode !== 'pruefung') return;
+  if (order.some(c => !state.places.some(p => p.id === c.place && p.center))) { setStatus('Die Ortsliste wurde geändert. Bitte die Dateien noch einmal einlesen.', true); return; }
+  if (state.exam && !confirm('Der Import ersetzt den aktuellen Prüfungsstand und die Teamliste. Fortfahren?')) return;
+  state.teams = order.map((c, i) => ({ name: `Team ${i + 1}`, level: c.tr.level, place: c.place }));
+  state.planTeams = state.teams.map(t => ({ ...t }));
+  state.plans = [order]; state.active = 0; state.pools = {}; state.seen = order.map(c => new Set([c.id]));
+  const info = imp.info.slice();
+  startExam();
+  persist(); renderTeams();
+  closeImport();
+  renderResults();
+  drawExam(true);
+  setStatus(`${order.length} Trail${order.length === 1 ? '' : 's'} importiert.${chainStatus(info)} Strecken unverändert aus den GPX-Dateien. Vor Ort prüfen: Zugang, Sicht, Abholung, Verkehr.`);
+}
+
 // Ortszusatz im Prüfungsstand, nur wenn er mehrere Orte hat
 const examPlaceSuffix = (ex, t) => (ex.places.length > 1 ? ' · ' + placeLabel(Pruefung.placeOf(ex, t)) : '');
 function renderExam() {
@@ -2389,7 +2742,7 @@ function renderExam() {
       <div class="stats"><span><b>${+t.length}</b> m</span><span><b>${+t.turns}</b> Richtungswechsel</span><span><b>${+t.decisions - +t.turns}</b> zusätzliche Entscheidungsstelle${t.decisions - t.turns === 1 ? '' : 'n'}</span><span><b>${+t.crossings}</b> Kreuzung${t.crossings === 1 ? '' : 'en'}</span><span>Suchzeit <b>${lv.searchMin}</b> min</span></div>
       <div class="streets"></div>
       ${t.link === undefined ? '' : `<div class="streets">${t.link === null ? 'Beginn der Kette' : t.link.gap ? `<b style="color:var(--warn)">Lücke:</b> neuer Abschnitt, ${+t.link.dist} m Luftlinie vom vorigen Ziel` : `Weg vom vorigen Ziel: <b>${+t.link.dist} m</b>`}</div>`}
-      ${t.harder ? `<div class="warnbox"><b>Hinweis:</b> ${esc(t.harder)}. PO-konform und zulässig; an diesen Stellen könnte der Hund anders abbiegen. Beim Abfahren ansehen.</div>` : ''}
+      ${t.imported ? `<div class="warnbox"><b>Importiert${t.name ? ': ' + esc(t.name) : ''}.</b> Die Strecke ist unverändert aus der GPX-Datei. Die Wegbeschreibung ist aus dem Wegenetz abgeleitet und ungefähr.${(t.issues || []).length ? '<ul>' + t.issues.map(x => `<li>${esc(x)}</li>`).join('') + '</ul>' : ''}</div>` : t.harder ? `<div class="warnbox"><b>Hinweis:</b> ${esc(t.harder)}. PO-konform und zulässig; an diesen Stellen könnte der Hund anders abbiegen. Beim Abfahren ansehen.</div>` : ''}
       <details class="checks steps-box"><summary>Trailverlauf: ${t.steps.length} Schritte</summary><ol class="steps"></ol></details>
       <label class="check exam-check"><input type="checkbox"${t.checked ? ' checked' : ''}> geprüft (abgefahren)</label>
       <div class="actions"></div>`;
@@ -2404,6 +2757,7 @@ function renderExam() {
     });
     card.querySelector('.exam-check input').onchange = e => { t.checked = e.target.checked; persistExam(); renderExam(); };
     const bRep = mk('Ersetzen', () => replaceTrail(i, bRep));
+    if (t.imported) { bRep.disabled = true; bRep.title = 'Importierter Trail: bitte neu importieren'; }
     card.querySelector('.actions').append(bRep, linkBtn('Startpunkt', pointLink(t.ll[0])), linkBtn('Endpunkt', pointLink(t.ll[t.ll.length - 1])));
     cards.append(card);
   });
@@ -2514,7 +2868,7 @@ async function openSheets() {
       </div>
       <div class="sheet-map"><div class="sheet-north">▲ N</div></div>
       <div class="sheet-foot"><span></span><span class="brand"></span></div>`;
-    sh.querySelector('.sheet-title b').textContent = `Trail ${i + 1} · ${t.level}`;
+    sh.querySelector('.sheet-title b').textContent = `Trail ${i + 1} · ${t.level}${t.imported ? ' · importiert' : ''}`;
     sh.querySelector('.sheet-title span').textContent = `Prüfung ${CLUB.short}${day ? ' · ' + day : ''}`;
     const place = placeLabel(Pruefung.placeOf(ex, t));
     const vals = [who.hf, a.vp, who.hund, `${t.length} m`, `${place} · ${t.startStreet} → ${t.endStreet}`];

@@ -304,3 +304,116 @@ test('Kreisverkehr: in der Prüfung ausgeschlossen, im Training erlaubt', () => 
   assert.equal(check(Planner.validate(G, tr('pruefung')), /Kreisverkehr/).ok, false);
   assert.equal(check(Planner.validate(G, tr('training')), /Kreisverkehr/), undefined);
 });
+
+test('levelByLength ordnet die Länge einer Stufe zu (±10 %)', () => {
+  const e = [[270, 'MT-I'], [330, 'MT-I'], [331, null], [450, null], [540, 'MT-II'], [660, 'MT-II'], [661, null], [900, 'MT-III'], [1100, 'MT-III'], [1101, null]];
+  for (const [len, lv] of e) assert.equal(Planner.levelByLength(len), lv, `${len} m`);
+});
+
+// ---------- GPX-Zuordnung ----------
+const gpxOf = (G, tr) => Planner.trailPts(G, tr).map(p => G.toLatLon(p));
+
+test('trackCandidate ordnet eine Linie dem Wegenetz zu und lässt sie unverändert', () => {
+  const G = grid(), W = Planner.walkGraph(G);
+  const ll = gpxOf(G, oneTurnTwoExtra(G));
+  const c = Planner.trackCandidate(G, W, ll, 'MT-I');
+  assert.equal(c.matched, true);
+  assert.equal(c.v.turns, 1);
+  assert.equal(c.v.extraDecisions, 2);
+  assert.ok(c.far < 0.05, 'Linie liegt auf den Wegen');
+  assert.equal(c.v.pts.length, ll.length);
+  c.v.pts.forEach((p, i) => { const q = G.toLatLon(p); assert.ok(Math.abs(q[0] - ll[i][0]) < 1e-9 && Math.abs(q[1] - ll[i][1]) < 1e-9); });
+  assert.ok(Math.abs(c.v.length - 298) < 2, `Länge ${c.v.length}`);
+});
+
+test('trackCandidate nimmt für die Längenprüfung die Länge der Linie, nicht die der Beine', () => {
+  const G = grid(), W = Planner.walkGraph(G);
+  const ll = gpxOf(G, oneTurnTwoExtra(G));
+  const c = Planner.trackCandidate(G, W, ll, 'MT-I');
+  assert.equal(c.v.checks.find(x => /^Länge/.test(x.label)).ok, true);
+  // gleiche Strecke, aber als MT-II geprüft: die Länge (298 m) passt nicht zu 600 m
+  const c2 = Planner.trackCandidate(G, W, ll, 'MT-II');
+  assert.equal(c2.v.checks.find(x => /^Länge/.test(x.label)).ok, false);
+});
+
+test('trackCandidate markiert eine Linie neben den Wegen als unsicher', () => {
+  const G = grid(), W = Planner.walkGraph(G);
+  const ll = gpxOf(G, oneTurnTwoExtra(G)).map(([a, b]) => [a, b + 18 / (111320 * Math.cos(a * Math.PI / 180))]);   // ca. 18 m nach Osten versetzt
+  const c = Planner.trackCandidate(G, W, ll, 'MT-I');
+  assert.ok(c.far > 0.3 && c.far < 0.7, `far ${c.far}`);   // nur die Nord-Süd-Stücke sind versetzt, die Ost-West-Stücke liegen noch auf ihrem Weg
+});
+
+test('trackCandidate stürzt bei einer Linie weit abseits nicht ab', () => {
+  const G = grid(), W = Planner.walkGraph(G);
+  const ll = [[CENTER.lat + 0.02, CENTER.lon], [CENTER.lat + 0.0227, CENTER.lon]];
+  const c = Planner.trackCandidate(G, W, ll, 'MT-I');
+  assert.ok(c.far > 0.9 || !c.matched);
+  assert.ok(c.v.length > 250);
+});
+
+test('describe rechnet die Meterangaben auf die Länge der Linie um', () => {
+  const G = grid(), W = Planner.walkGraph(G);
+  const ll = gpxOf(G, oneTurnTwoExtra(G));
+  const longer = ll.concat([[ll[ll.length - 1][0] + 0.0005, ll[ll.length - 1][1]]]);   // Linie ca. 55 m länger als die Beine
+  const c = Planner.trackCandidate(G, W, longer, 'MT-I');
+  const steps = Planner.describe(G, c.tr);
+  assert.ok(Math.abs(steps[steps.length - 1].at - Math.round(c.v.length)) <= 1);
+});
+
+// ---------- Kette „fest“ ----------
+function fixedSet() {
+  const G = grid(), W = Planner.walkGraph(G);
+  const mk = (id, level, legs) => { const tr = { level, mode: 'pruefung', legs }; return Planner.trackCandidate(G, W, gpxOf(G, tr), level, { id }); };
+  const a = mk('a', 'MT-I', oneTurnTwoExtra(G).legs);
+  const b = mk('b', 'MT-I', [leg(G, [4, 0], [4, 1], 60), leg(G, [4, 1], [4, 2]), leg(G, [4, 2], [4, 3]), leg(G, [4, 3], [4, 4], 0, 30)]);
+  const m = mk('m', 'MT-II', [0, 1, 2, 3, 4].map(j => leg(G, [1, j], [1, j + 1])).concat([leg(G, [1, 5], [2, 5]), leg(G, [2, 5], [3, 5])]));
+  return { G, W, a, b, m };
+}
+const teamsOf = (...lv) => lv.map((level, i) => ({ name: 'T' + i, level }));
+
+test('Kette fest: MT-I vor MT-II, alle Trails, keine neuen Kandidaten', () => {
+  const { G, W, a, b, m } = fixedSet();
+  const R = Planner.rng(1);
+  const ch = Planner.chain(G, W, teamsOf('MT-II', 'MT-I', 'MT-I'), { 'MT-I': { list: [a, b] }, 'MT-II': { list: [m] } }, R, 30, { fixed: true });
+  const ids = ch.order.map(c => c.id);
+  assert.equal(ids.length, 3);
+  assert.deepEqual(ids.slice().sort(), ['a', 'b', 'm']);
+  assert.equal(ids[2], 'm');
+  assert.deepEqual(ch.index.map(i => ['MT-II', 'MT-I', 'MT-I'][i]), ['MT-I', 'MT-I', 'MT-II']);
+});
+
+test('Kette fest: Trails, die sich zu nahe kommen, bleiben beide in der Kette', () => {
+  const { G, W, a } = fixedSet();
+  const twin = { ...a, id: 'a2' };   // gleiche Strecke, überlappt vollständig
+  const ch = Planner.chain(G, W, teamsOf('MT-I', 'MT-I'), { 'MT-I': { list: [a, twin] } }, Planner.rng(1), 30, { fixed: true });
+  assert.deepEqual(ch.order.map(c => c.id).sort(), ['a', 'a2']);
+});
+
+test('Kette fest: ohne Fußweg wird eine Lücke gemeldet, nichts geht verloren', () => {
+  const { G, W, a, b } = fixedSet();
+  const far = { ...b, id: 'far' };
+  // weit entfernter Trail: Start weit über 250 m vom Ziel von a
+  const farLL = gpxOf(G, { level: 'MT-I', mode: 'pruefung', legs: [leg(G, [4, 5], [3, 5], 30), leg(G, [3, 5], [2, 5]), leg(G, [2, 5], [1, 5], 0, 40)] });
+  const f = Planner.trackCandidate(G, W, farLL, 'MT-I', { id: 'far' });
+  const ch = Planner.chain(G, W, teamsOf('MT-I', 'MT-I'), { 'MT-I': { list: [a, f] } }, Planner.rng(1), 30, { fixed: true });
+  assert.equal(ch.order.length, 2);
+  assert.equal(ch.gaps, 1);
+  assert.equal(ch.links[1], null);
+  assert.ok(far);
+});
+
+test('trackCandidate: Linie fast nur abseits der Wege gilt als nicht zuordenbar', () => {
+  const G = grid(), W = Planner.walkGraph(G);
+  const ll = gpxOf(G, oneTurnTwoExtra(G)).map(([a, b]) => [a + 30 / 110574, b + 30 / (111320 * Math.cos(a * Math.PI / 180))]);   // 30 m diagonal versetzt
+  const c = Planner.trackCandidate(G, W, ll, 'MT-I');
+  assert.equal(c.matched, false);
+  assert.ok(c.far > 0.6);
+  assert.equal(c.v.checks.length, 0);
+});
+
+test('matchTrack behält ein kurzes letztes Stück', () => {
+  const G = grid(), W = Planner.walkGraph(G);
+  const tr = { level: 'MT-I', mode: 'pruefung', legs: [leg(G, [1, 0], [1, 1], 30), leg(G, [1, 1], [1, 2]), leg(G, [1, 2], [2, 2], 0, 5)] };
+  const m = Planner.matchTrack(G, W, Planner.trailPts(G, tr));
+  assert.equal(m.legs.length, 3);
+});

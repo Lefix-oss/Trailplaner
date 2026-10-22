@@ -2,6 +2,19 @@
 
 Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Die aktuelle Version steht in der App neben der Überschrift.
 
+## V1.8 – 22.10.2026
+
+Trails aus GPX-Dateien importieren (nur Prüfungsmodus).
+
+- **Neuer Knopf „Import Trails …“:** Mehrere GPX-Dateien (zum Beispiel Export aus Mapy.com) lassen sich per Ziehen oder Auswählen einlesen. Jede Datei erscheint in einer Liste mit Länge, Stufe, Ort und Prüfergebnis (✓, ⚠, ✕) samt Gründen.
+- **Die Strecke bleibt unverändert:** Gespeichert, gezeichnet und gedruckt wird die GPX-Linie. Die Länge ist die Länge der Linie, die Stufe ergibt sich allein daraus (MT-I 270–330 m, MT-II 540–660 m, MT-III 900–1100 m).
+- **Regelprüfung:** Die Linie wird dem Wegenetz zugeordnet und mit denselben Regeln wie geplante Trails geprüft (Richtungswechsel, Wegarten, Kreisverkehr, Bundes- und Staatsstraßen, Abholung am Ziel …). Liegt viel von der Linie neben bekannten Wegen, erscheint ein Warnhinweis, dass die Prüfung ungenau ist.
+- **Nichts wird still aussortiert:** Durchgefallene Trails und Trails, die zu nah beieinander liegen, werden gemeldet. Ob sie übernommen werden, entscheidet der Haken. Gesperrt sind nur unlesbare Dateien, Längen ohne Stufe und Trails außerhalb aller Orte der Ortsliste.
+- **Kette:** Die Trails werden zur Kette geordnet (MT-I vor MT-II, Fußwege 75–250 m, Lücken werden angezeigt, nichts wird gewürfelt oder gedehnt). Die Karte zeigt die Kette vor dem Übernehmen.
+- **Übernehmen:** Es entsteht ein normaler Prüfungsstand mit Teamliste „Team 1 …“ in Kettenreihenfolge. Speichern, Zuteilung, Bögen und WhatsApp funktionieren wie bei geplanten Trails. Importierte Trails sind als „importiert“ gekennzeichnet, ihre Wegbeschreibung ist abgeleitet und ungefähr.
+- **Ersetzen** ist bei importierten Trails gesperrt. „Nur Ort … neu planen“ fragt vorher ausdrücklich, weil importierte Trails dabei verworfen werden.
+- **Sicherheit:** Die GPX-Dateien werden von einem kleinen eigenen Leser gelesen (höchstens 1 MB, 50 Dateien, 5000 Punkte, gültige Koordinaten). Namen aus den Dateien erscheinen nur als Text.
+
 ## V1.7 – 22.10.2026
 
 Absicherung für die Weitergabe an externe Tester.
