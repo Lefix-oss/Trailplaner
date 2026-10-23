@@ -213,6 +213,11 @@ ol.steps li.end .t { font-weight: 600; }
 .sheet-map { flex: 1; min-height: 0; position: relative; border: .3mm solid #999; }
 .sheet-north { position: absolute; top: 3mm; right: 3mm; z-index: 500; background: rgba(255, 255, 255, .88); color: #1d2620; font: 700 11pt Arial, sans-serif; padding: 1mm 2.2mm; border-radius: 1mm; }
 .sm-label { display: inline-block; font: 700 10pt Arial, sans-serif; color: #fff; padding: 1mm 2.5mm; border-radius: 1mm; white-space: nowrap; box-shadow: 0 0 0 .5mm #fff; }
+.sheet-tab { width: 100%; border-collapse: collapse; font-size: 10pt; }
+.sheet-tab th, .sheet-tab td { border-bottom: .2mm solid #bbb; padding: 1.2mm 2mm; text-align: left; vertical-align: middle; overflow-wrap: anywhere; }
+.sheet-tab th { border-bottom: .5mm solid #1d2620; font-size: 9pt; }
+.sheet-dot { display: inline-block; min-width: 6.5mm; height: 6.5mm; line-height: 6.5mm; border-radius: 50%; color: #fff; font-weight: 700; text-align: center; print-color-adjust: exact; -webkit-print-color-adjust: exact; }
+.sm-num { display: block; width: 26px; height: 26px; line-height: 22px; border: 2px solid #fff; border-radius: 50%; box-sizing: border-box; color: #fff; font: 700 13px/22px Arial, sans-serif; text-align: center; }
 .sheet-foot { display: flex; justify-content: space-between; align-items: center; gap: 4mm; font-size: 8.5pt; color: #555; }
 .sheet-foot .brand { display: flex; align-items: center; gap: 2mm; font-size: 10pt; font-weight: 700; color: #1d2620; }
 .sheet-foot svg { width: 12mm; height: 12mm; color: #1d2620; }
@@ -1039,7 +1044,7 @@ const Planner = (() => {
     const smp = samples(pts), xs = smp.map(p => p[0]), ys = smp.map(p => p[1]);
     return {
       id: o.id || level + '#imp', tr, v, segSet, nodeSet, samples: smp, bbox: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)],
-      ll, matched, far: farShare, maxOff: m ? m.maxOff : null, imported: true, name: o.name || '',
+      ll, matched, far: farShare, maxOff: m ? m.maxOff : null, imported: true, name: o.name || '', file: o.file || '',
     };
   }
 
@@ -1946,6 +1951,7 @@ const Pruefung = (() => {
       if (t.steps !== undefined && !t.steps.every(s => s && typeof s === 'object' && num(s.at) && (s.options === undefined || num(s.options)) && typeof s.text === 'string' && typeof s.kind === 'string')) throw bad();
       if (t.imported !== undefined && typeof t.imported !== 'boolean') throw bad();
       if (t.name !== undefined && (typeof t.name !== 'string' || t.name.length > 80)) throw bad();
+      if (t.file !== undefined && (typeof t.file !== 'string' || t.file.length > 120)) throw bad();
       if (t.issues !== undefined && !(Array.isArray(t.issues) && t.issues.length <= 20 && t.issues.every(x => typeof x === 'string' && x.length <= 300))) throw bad();
       if (!t.steps) t.steps = [];
       if (typeof t.checked !== 'boolean') t.checked = false;
@@ -1977,7 +1983,7 @@ const store = {
 const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946], contact: '' };
 $('#privacyWho').textContent = CLUB.name + (CLUB.contact ? ', Kontakt: ' + CLUB.contact : '');
 // Versionsnummer: jede Änderung zählt um 0.1 hoch (V1.0 … V1.9, dann V2.0 …); Änderungen stehen in CHANGELOG.md
-const APP_VERSION = '2.0';
+const APP_VERSION = '2.1';
 document.getElementById('appVersion').textContent = 'V' + APP_VERSION;
 const saved = store.get();
 function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }
@@ -2558,7 +2564,7 @@ function snapshotImported(c) {
   const G = c.G, v = c.v, names = c.matched ? Planner.endpointNames(G, c.tr) : { start: 'unbekannt', end: 'unbekannt' };
   const soft = c.matched ? v.checks.find(x => x.soft && !x.ok) : null;
   return {
-    harder: soft ? soft.detail : '', imported: true, name: c.name ? c.name : undefined, issues: (c.issues || []).slice(0, 20).map(s => String(s).slice(0, 300)),
+    harder: soft ? soft.detail : '', imported: true, name: c.name ? c.name : undefined, file: c.file ? String(c.file).slice(0, 120) : undefined, issues: (c.issues || []).slice(0, 20).map(s => String(s).slice(0, 300)),
     level: c.tr.level, ll: c.ll.map(p => [p[0], p[1]]), length: Math.round(v.length),
     turns: v.turns, decisions: v.decisions, crossings: v.crossings,
     steps: c.matched ? Planner.describe(G, c.tr).map(s => ({ at: s.at, kind: s.kind, text: s.text, options: s.options || 0 }))
@@ -2870,7 +2876,7 @@ function checkItem(it) {
   const G = imp.graphs.get(it.place.id);
   Planner.setTerrain(G, it.place.terrain, $('#allowPaths').checked, $('#avoidLoops').checked, $('#strictTurns').checked);
   const W = G._walk || (G._walk = Planner.walkGraph(G));
-  const c = Planner.trackCandidate(G, W, it.ll, it.level, { id: `${it.place.id}:imp${it.key}`, name: it.route });
+  const c = Planner.trackCandidate(G, W, it.ll, it.level, { id: `${it.place.id}:imp${it.key}`, name: it.route, file: it.name });
   c.G = G; c.place = it.place.id; it.c = c;
   it.reasons = it.reasons.filter(r => !r.startsWith('Ort nicht eindeutig'));
   const hard = c.v.checks.filter(x => !x.ok && !x.soft), soft = c.v.checks.filter(x => !x.ok && x.soft);
@@ -3095,8 +3101,10 @@ function renderExam() {
       ${t.imported ? `<div class="warnbox"><b>Importiert${t.name ? ': ' + esc(t.name) : ''}.</b> Die Strecke ist unverändert aus der GPX-Datei. Die Wegbeschreibung ist aus dem Wegenetz abgeleitet und ungefähr.${(t.issues || []).length ? '<ul>' + t.issues.map(x => `<li>${esc(x)}</li>`).join('') + '</ul>' : ''}</div>` : t.harder ? `<div class="warnbox"><b>Hinweis:</b> ${esc(t.harder)}. PO-konform und zulässig; an diesen Stellen könnte der Hund anders abbiegen. Beim Abfahren ansehen.</div>` : ''}
       <details class="checks steps-box"><summary>Trailverlauf: ${t.steps.length} Schritte</summary><ol class="steps"></ol></details>
       <label class="check exam-check"><input type="checkbox"${t.checked ? ' checked' : ''}> geprüft (abgefahren)</label>
+      ${t.file ? '<div class="streets file-line"></div>' : ''}
       <div class="actions"></div>`;
     card.querySelector('.streets').textContent = `${t.startStreet} → ${t.endStreet}`;
+    const fl = card.querySelector('.file-line'); if (fl) fl.textContent = `Datei: ${t.file}`;
     const ol = card.querySelector('ol');
     t.steps.forEach(s => {
       const li = document.createElement('li'); li.className = s.kind;
@@ -3177,20 +3185,70 @@ function renderAssign(host) {
     table.append(body);
   }
   drawTable();
-  const bSheets = mk('📄 Prüfungsbögen (PDF)', openSheets); bSheets.className = 'primary';
+  const bSheets = mk('📄 Prüfungsbögen (PDF)', () => openSheets()); bSheets.className = 'primary';
+  const bOver = mk('🗺 Übersicht pro Ort (PDF)', () => openSheets('overview'));
   // Start- und Endpunkte per WhatsApp, mit der jeweils aktuellen Zuteilung (Text wird erst beim Klick gebaut)
   const wa = (kind, label) => {
     const el = document.createElement('a'); el.className = 'wa'; el.target = '_blank'; el.rel = 'noopener'; el.textContent = label; el.href = 'https://wa.me/';
     el.onclick = () => { el.href = 'https://wa.me/?text=' + encodeURIComponent(Pruefung.shareText(ex, kind, pointLink)); };
     return el;
   };
-  sec.append(bSheets, wa('start', 'Alle Startpunkte per WhatsApp senden'), wa('end', 'Alle Endpunkte per WhatsApp senden'));
+  sec.append(bSheets, bOver, wa('start', 'Alle Startpunkte per WhatsApp senden'), wa('end', 'Alle Endpunkte per WhatsApp senden'));
   host.append(sec);
 }
 
 // Ein A4-Bogen pro Trail mit Luftbild; gedruckt bzw. als PDF gespeichert über den Browser
 const AERIAL = 'https://server.arcgisonline.com/ArcGIS/rest/services/World_Imagery/MapServer/tile/{z}/{y}/{x}';
-async function openSheets() {
+// Übersichtsseiten: eine A4-Seite pro Ort mit allen Trails dieses Orts (Luftbild, Tabelle)
+function overviewSheets(ex, holder, maps, day, logo) {
+  const places = ex.places.filter(p => ex.trails.some(t => Pruefung.placeOf(ex, t).id === p.id));
+  return places.map(p => {
+    const list = ex.trails.map((t, i) => ({ t, i })).filter(x => Pruefung.placeOf(ex, x.t).id === p.id);
+    const sh = document.createElement('section'); sh.className = 'sheet';
+    sh.innerHTML = `
+      <div class="sheet-head"><div class="sheet-title"><b></b><span></span></div></div>
+      <div class="sheet-map"><div class="sheet-north">▲ N</div></div>
+      <table class="sheet-tab"><thead><tr><th>Nr.</th><th>Stufe</th><th>Länge</th><th>Start → Ende</th><th>Datei</th></tr></thead><tbody></tbody></table>
+      <div class="sheet-foot"><span></span><span class="brand"></span></div>`;
+    sh.querySelector('.sheet-title b').textContent = `Übersicht · ${placeLabel(p)}`;
+    sh.querySelector('.sheet-title span').textContent = `Prüfung ${CLUB.short}${day ? ' · ' + day : ''} · ${list.length} Trail${list.length === 1 ? '' : 's'}`;
+    const body = sh.querySelector('tbody');
+    for (const { t, i } of list) {
+      const tr = document.createElement('tr');
+      const dot = document.createElement('td'); const b = document.createElement('span'); b.className = 'sheet-dot'; b.style.background = COLORS[i % COLORS.length]; b.textContent = i + 1; dot.append(b);
+      tr.append(dot);
+      for (const v of [t.level, `${t.length} m`, `${t.startStreet} → ${t.endStreet}`, t.file || '']) { const td = document.createElement('td'); td.textContent = v; tr.append(td); }
+      body.append(tr);
+    }
+    sh.querySelector('.sheet-foot span').textContent = `${list.length} Trail${list.length === 1 ? '' : 's'} in ${placeLabel(p)}`;
+    const brand = sh.querySelector('.sheet-foot .brand');
+    if (logo) { const l = logo.cloneNode(true); l.removeAttribute('class'); brand.append(l); }
+    brand.append(`Trailplaner V${APP_VERSION} · ${CLUB.short}`);
+    holder.append(sh);
+
+    const m = L.map(sh.querySelector('.sheet-map'), { zoomControl: false, attributionControl: true, dragging: false, scrollWheelZoom: false, doubleClickZoom: false, boxZoom: false, keyboard: false, touchZoom: false, zoomSnap: 0.25 });
+    maps.push(m);
+    m.attributionControl.setPrefix(false);
+    const tiles = L.tileLayer(AERIAL, { maxZoom: 19, attribution: 'Luftbild © Esri und Partner · Wege © OpenStreetMap-Mitwirkende' });
+    let failed = 0; tiles.on('tileerror', () => { failed++; });
+    const loaded = new Promise(res => tiles.once('load', () => res(failed === 0)));
+    tiles.addTo(m);
+    const all = [];
+    for (const { t, i } of list) {
+      const color = COLORS[i % COLORS.length];
+      L.polyline(t.ll, { color: '#ffffff', weight: 8, opacity: 0.95 }).addTo(m);
+      L.polyline(t.ll, { color, weight: 4, opacity: 1 }).addTo(m);
+      const s = t.ll[0], e = t.ll[t.ll.length - 1];
+      L.circleMarker(e, { radius: 5, color: '#ffffff', weight: 2, fillColor: color, fillOpacity: 1 }).addTo(m);
+      L.marker(s, { icon: L.divIcon({ className: '', html: `<span class="sm-num" style="background:${color}">${i + 1}</span>`, iconSize: [26, 26], iconAnchor: [13, 13] }), keyboard: false, interactive: false }).addTo(m);
+      all.push(...t.ll);
+    }
+    L.control.scale({ imperial: false, position: 'bottomleft' }).addTo(m);
+    m.fitBounds(all, { padding: [40, 40] });
+    return loaded;
+  });
+}
+async function openSheets(kind = 'trails') {
   const ex = state.exam;
   const old = document.getElementById('sheets'); if (old) old.remove();
   const ov = document.createElement('div'); ov.id = 'sheets';
@@ -3206,7 +3264,7 @@ async function openSheets() {
 
   const day = ex.date ? new Date(ex.date + 'T12:00:00').toLocaleDateString('de-DE', { weekday: 'short', day: '2-digit', month: '2-digit', year: 'numeric' }) : '';
   const logo = document.querySelector('header.brand svg.logo');
-  const loads = ex.trails.map((t, i) => {
+  const loads = kind === 'overview' ? overviewSheets(ex, holder, maps, day, logo) : ex.trails.map((t, i) => {
     const a = ex.assign[i] || { team: '', vp: '' }, who = Pruefung.splitTeam(a.team);
     const sh = document.createElement('section'); sh.className = 'sheet';
     sh.innerHTML = `
@@ -3224,7 +3282,7 @@ async function openSheets() {
     const vals = [who.hf, a.vp, who.hund, `${t.length} m`, `${place} · ${t.startStreet} → ${t.endStreet}`];
     sh.querySelectorAll('.sheet-head .v').forEach((el, k) => { el.textContent = vals[k]; el.classList.toggle('blank', !vals[k]); });
     const s = t.ll[0], e = t.ll[t.ll.length - 1];
-    sh.querySelector('.sheet-foot span').textContent = `Start: ${s[0].toFixed(5)}, ${s[1].toFixed(5)} · Ende: ${e[0].toFixed(5)}, ${e[1].toFixed(5)}`;
+    sh.querySelector('.sheet-foot span').textContent = `Start: ${s[0].toFixed(5)}, ${s[1].toFixed(5)} · Ende: ${e[0].toFixed(5)}, ${e[1].toFixed(5)}${t.file ? ' · Datei: ' + t.file : ''}`;
     const brand = sh.querySelector('.sheet-foot .brand');
     if (logo) { const l = logo.cloneNode(true); l.removeAttribute('class'); brand.append(l); }
     brand.append(`Trailplaner V${APP_VERSION} · ${CLUB.short}`);
@@ -3260,7 +3318,7 @@ async function openSheets() {
   const ok = await Promise.race([Promise.all(loads).then(r => r.every(Boolean)), timeout]);
   if (!ov.isConnected) return;
   bPrint.disabled = false;
-  msg.textContent = ok ? `${ex.trails.length} Bögen bereit. Beim Drucken „Als PDF speichern“ wählen.` : 'Einige Luftbilder sind nicht geladen. Internetverbindung prüfen oder trotzdem drucken.';
+  msg.textContent = ok ? `${loads.length} ${kind === 'overview' ? 'Übersichtsseite' + (loads.length === 1 ? '' : 'n') : 'Bögen'} bereit. Beim Drucken „Als PDF speichern“ wählen.` : 'Einige Luftbilder sind nicht geladen. Internetverbindung prüfen oder trotzdem drucken.';
 }
 
 function renderResults() {

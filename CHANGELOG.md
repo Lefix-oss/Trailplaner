@@ -2,6 +2,13 @@
 
 Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Die aktuelle Version steht in der App neben der Überschrift.
 
+## V2.1 – 23.10.2026
+
+Übersicht pro Ort und Dateiname bei importierten Trails.
+
+- **Übersicht pro Ort (PDF):** Neuer Knopf neben den Prüfungsbögen. Pro Ort eine A4-Seite mit Luftbild, allen Trails des Orts in eigenen Farben (Nummer am Start, Punkt am Ende) und einer Tabelle (Nr., Stufe, Länge, Start → Ende, Datei). Team und VP stehen nicht darauf, die Seite geht also schon vor der Auslosung.
+- **Dateiname beim Import:** Der Name der GPX-Datei wird beim Trail gespeichert und steht am Ende der Trailkarte, auf dem Prüfungsbogen (Fußzeile) und in der Übersicht. So lässt sich ein Trail beim Austauschen der Datei zuordnen. Ältere Stände ohne Dateiname laufen weiter.
+
 ## V2.0 – 22.10.2026
 
 GPX-Import: Übergangswege nach der fachlichen Regel statt nach alten Generatorgrenzen.

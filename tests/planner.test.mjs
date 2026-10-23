@@ -326,6 +326,13 @@ test('trackCandidate ordnet eine Linie dem Wegenetz zu und lässt sie unverände
   assert.ok(Math.abs(c.v.length - 298) < 2, `Länge ${c.v.length}`);
 });
 
+test('trackCandidate behält den Dateinamen', () => {
+  const G = grid(), W = Planner.walkGraph(G);
+  const ll = gpxOf(G, oneTurnTwoExtra(G));
+  assert.equal(Planner.trackCandidate(G, W, ll, 'MT-I', { file: 'trail (4).gpx' }).file, 'trail (4).gpx');
+  assert.equal(Planner.trackCandidate(G, W, ll, 'MT-I').file, '');
+});
+
 test('trackCandidate nimmt für die Längenprüfung die Länge der Linie, nicht die der Beine', () => {
   const G = grid(), W = Planner.walkGraph(G);
   const ll = gpxOf(G, oneTurnTwoExtra(G));
