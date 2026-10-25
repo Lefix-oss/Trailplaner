@@ -34,6 +34,17 @@ test('draw: gleicher Startwert ergibt gleiche Zuteilung', () => {
   assert.deepEqual(Pruefung.draw(...args, Planner.rng(7)), Pruefung.draw(...args, Planner.rng(7)));
 });
 
+test('balance zählt besetzte Trails, übrige Namen und Trails ohne Besetzung', () => {
+  const trails = [{ level: 'MT-I' }, { level: 'MT-II' }, { level: 'MT-II' }];
+  const names = { teams: { 'MT-I': ['A mit X'], 'MT-II': ['B mit Y', 'C mit Z', 'D mit W'], 'MT-III': [] }, vps: ['V1', 'V2'] };
+  const assign = [{ team: 'A mit X', vp: 'V1' }, { team: 'B mit Y', vp: '' }, { team: '', vp: 'V2' }];
+  const b = Pruefung.balance(trails, names, assign);
+  assert.deepEqual(b.vps, { total: 3, filled: 2, names: 2, free: [], open: [2] });
+  assert.deepEqual(b.teams['MT-I'], { total: 1, filled: 1, names: 1, free: [], open: [] });
+  assert.deepEqual(b.teams['MT-II'], { total: 2, filled: 1, names: 3, free: ['C mit Z', 'D mit W'], open: [3] });
+  assert.equal(b.teams['MT-III'], undefined, 'Stufe ohne Trails und Namen fehlt');
+});
+
 test('setCell tauscht, wenn der Name schon vergeben ist', () => {
   const a = [{ team: 'A', vp: 'V1' }, { team: 'B', vp: 'V2' }];
   Pruefung.setCell(a, 0, 'vp', 'V2');

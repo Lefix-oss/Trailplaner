@@ -2,6 +2,13 @@
 
 Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Die aktuelle Version steht in der App neben der Überschrift.
 
+## V2.3 – 25.10.2026
+
+Zuteilung: Übersicht, wer schon vergeben ist.
+
+- **Auswahl in der Zuteilungstabelle** (Versteckperson und Team) hat zwei Gruppen: „Noch frei“ oben, „Schon zugeteilt“ darunter mit der Trailnummer („Angie · Trail 4“). Wer einen schon vergebenen Namen wählt, tauscht die Plätze (wie bisher).
+- **Bilanz über der Tabelle:** je Versteckpersonen und je Teamstufe „x von y Trails besetzt“, übrige Namen und Trails ohne Besetzung. So fällt sofort auf, wenn Namen oder Trails übrig sind.
+
 ## V2.2 – 25.10.2026
 
 Trails einzeln hinzufügen und löschen, Kette auf Knopfdruck neu aufbauen.

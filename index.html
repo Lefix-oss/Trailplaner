@@ -1742,6 +1742,22 @@ const Pruefung = (() => {
     assign[i][field] = name || '';
   }
 
+  // Bilanz der Zuteilung: je Feld (Versteckpersonen, Teams je Stufe) Zahl der Trails, übrige Namen und Trails ohne Besetzung (Nummern ab 1)
+  function balance(trails, names, assign) {
+    const all = trails.map((_, i) => i);
+    const part = (list, field, idx) => {
+      const free = list.filter(n => !idx.some(i => assign[i][field] === n));
+      const open = idx.filter(i => !assign[i][field]).map(i => i + 1);
+      return { total: idx.length, filled: idx.length - open.length, names: list.length, free, open };
+    };
+    const teams = {};
+    for (const lv of LEVEL_KEYS) {
+      const idx = all.filter(i => trails[i].level === lv), list = (names.teams && names.teams[lv]) || [];
+      if (idx.length || list.length) teams[lv] = part(list, 'team', idx);
+    }
+    return { vps: part(names.vps || [], 'vp', all), teams };
+  }
+
   // Gespeicherter Trail als Hindernis für Planner.compatible (nur Geometrie, keine Graph-Bezüge)
   function obstacle(trail, fromLatLon) {
     const pts = trail.ll.map(fromLatLon);
@@ -1967,7 +1983,7 @@ const Pruefung = (() => {
     return ex;
   }
 
-  return { FORMAT, VERSION, LEVEL_KEYS, PLACE_IDS, parseNames, splitTeam, draw, setCell, obstacle, shareText, placeOf, mergePlaces, replacePlaceTrails, osmKey, osmFresh, osmBBox, findExtract, overpassQuery, placeChoices, serializeExam, parseExam, GPX_LIMITS, parseGpx, placeFor, groupTracks, reverseName };
+  return { FORMAT, VERSION, LEVEL_KEYS, PLACE_IDS, parseNames, splitTeam, draw, setCell, balance, obstacle, shareText, placeOf, mergePlaces, replacePlaceTrails, osmKey, osmFresh, osmBBox, findExtract, overpassQuery, placeChoices, serializeExam, parseExam, GPX_LIMITS, parseGpx, placeFor, groupTracks, reverseName };
 })();
 if (typeof module !== 'undefined') module.exports = Pruefung;
 </script>
@@ -1985,7 +2001,7 @@ const store = {
 const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946], contact: '' };
 $('#privacyWho').textContent = CLUB.name + (CLUB.contact ? ', Kontakt: ' + CLUB.contact : '');
 // Versionsnummer: jede Änderung zählt um 0.1 hoch (V1.0 … V1.9, dann V2.0 …); Änderungen stehen in CHANGELOG.md
-const APP_VERSION = '2.2';
+const APP_VERSION = '2.3';
 document.getElementById('appVersion').textContent = 'V' + APP_VERSION;
 const saved = store.get();
 function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }
@@ -3314,21 +3330,49 @@ function renderAssign(host) {
   const bClear = mk('Leeren', () => { ex.assign = ex.trails.map(() => ({ team: '', vp: '' })); note.textContent = ''; persistExam(); drawTable(); });
   row.append(bDraw, bClear); sec.append(row, note);
   const table = document.createElement('table'); table.className = 'assign-table'; sec.append(table);
-  const select = (names, value, onPick) => {
+  // Auswahl mit zwei Gruppen: oben noch freie Namen, darunter schon zugeteilte mit ihrer Trailnummer (Wahl tauscht die Plätze)
+  const select = (names, value, onPick, field) => {
     const s = document.createElement('select');
-    const opts = [''].concat(names, value && !names.includes(value) ? [value] : []);
-    for (const n of opts) { const o = document.createElement('option'); o.value = n; o.textContent = n || '—'; s.append(o); }
+    const o0 = document.createElement('option'); o0.value = ''; o0.textContent = '—'; s.append(o0);
+    const seat = n => ex.assign.findIndex(a => a[field] === n);
+    const mine = n => n === value || seat(n) < 0;
+    const group = (label, list, text) => {
+      if (!list.length) return;
+      const g = document.createElement('optgroup'); g.label = label;
+      for (const n of list) { const o = document.createElement('option'); o.value = n; o.textContent = text(n); g.append(o); }
+      s.append(g);
+    };
+    const free = names.filter(mine).concat(value && !names.includes(value) ? [value] : []);
+    group('Noch frei', free, n => n);
+    group('Schon zugeteilt (Wahl tauscht)', names.filter(n => !mine(n)), n => `${n} · Trail ${seat(n) + 1}`);
     s.value = value; s.onchange = () => onPick(s.value); return s;
   };
+  const bal = document.createElement('div'); bal.className = 'assign-bal'; table.before(bal);
+  function drawBalance() {
+    const b = Pruefung.balance(ex.trails, ex.names, ex.assign);
+    bal.innerHTML = '';
+    const line = (label, p) => {
+      if (!p.names && !p.filled) return;   // nichts eingetragen, nichts zugeteilt
+      const parts = [`${p.filled} von ${p.total} Trails besetzt`];
+      if (p.free.length) parts.push(`${p.free.length} Name${p.free.length === 1 ? '' : 'n'} übrig: ${p.free.join(', ')}`);
+      if (p.open.length) parts.push(`ohne ${label.startsWith('Versteck') ? 'Versteckperson' : 'Team'}: Trail ${p.open.join(', ')}`);
+      const d = document.createElement('div'); d.className = 'hint'; d.style.color = p.free.length || p.open.length ? 'var(--warn)' : 'var(--ok)';
+      d.textContent = `${p.free.length || p.open.length ? '⚠' : '✓'} ${label}: ${parts.join(' · ')}`;
+      bal.append(d);
+    };
+    line('Versteckpersonen', b.vps);
+    for (const lv of Pruefung.LEVEL_KEYS) if (b.teams[lv]) line(`Teams ${lv}`, b.teams[lv]);
+  }
   function drawTable() {
+    drawBalance();
     table.innerHTML = '<thead><tr><th>Trail</th><th>Versteckperson</th><th>Team</th></tr></thead>';
     const body = document.createElement('tbody');
     ex.trails.forEach((t, i) => {
       const tr = document.createElement('tr');
       const td0 = document.createElement('td'); td0.textContent = `${i + 1} · ${t.level}${examPlaceSuffix(ex, t)}`;
       const pick = fieldName => v => { Pruefung.setCell(ex.assign, i, fieldName, v); persistExam(); drawTable(); };
-      const td1 = document.createElement('td'); td1.append(select(ex.names.vps, ex.assign[i].vp, pick('vp')));
-      const td2 = document.createElement('td'); td2.append(select(ex.names.teams[t.level] || [], ex.assign[i].team, pick('team')));
+      const td1 = document.createElement('td'); td1.append(select(ex.names.vps, ex.assign[i].vp, pick('vp'), 'vp'));
+      const td2 = document.createElement('td'); td2.append(select(ex.names.teams[t.level] || [], ex.assign[i].team, pick('team'), 'team'));
       tr.append(td0, td1, td2); body.append(tr);
     });
     table.append(body);
