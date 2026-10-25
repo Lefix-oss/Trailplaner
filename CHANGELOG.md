@@ -2,6 +2,14 @@
 
 Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Die aktuelle Version steht in der App neben der Überschrift.
 
+## V2.5 – 25.10.2026
+
+Kürzere Seitenleiste: Trailkarten und Namenslisten zum Auf- und Zuklappen.
+
+- **Trailkarten (Prüfungsansicht):** Standardmäßig zugeklappt, eine Zeile pro Trail: Nummer, Stufe, Länge, ⚠ bei Hinweis oder Lücke, Dateiname und das Häkchen „geprüft“, das direkt in der Zeile bleibt. Klick auf die Zeile klappt die volle Karte auf (Kennzahlen, Straßen, Übergang, Hinweise, Trailverlauf, Knöpfe). Dazu „Alle aufklappen“ und „Alle zuklappen“. Was aufgeklappt ist, merkt sich die Seite nur, solange sie offen ist.
+- **Namenslisten:** Teams und Versteckpersonen stehen in einem Block „Namen eintragen“. Er ist offen, solange noch keine Namen eingetragen sind, danach zu (und bleibt so, wie zuletzt gewählt). Datum, Bilanz, Tabelle und Knöpfe bleiben sichtbar.
+- Die Trainingsansicht ist unverändert.
+
 ## V2.4 – 25.10.2026
 
 Obere Leiste am Desktop, kürzere Seitenleiste.

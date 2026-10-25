@@ -160,6 +160,17 @@ button.small { font-size: 13px; padding: 7px 10px; }
 .card { border: 1px solid var(--line); border-radius: 8px; background: var(--panel); overflow: hidden; }
 .card-head { display: flex; align-items: center; gap: 10px; padding: 12px 14px 0; flex-wrap: wrap; }
 .card-head .name { font: 700 20px/1.1 var(--display); }
+.card-toggle { cursor: pointer; user-select: none; }
+.card-toggle:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+.card-head .sum { font-size: 14px; color: var(--muted); }
+.card-head .sum-warn { color: var(--warn); }
+.card-head .file-sum { max-width: 11em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 12px; }
+.card-head .head-check { display: inline-flex; align-items: center; gap: 5px; font-size: 14px; font-weight: 600; cursor: pointer; }
+.card-head .chev { margin-left: auto; color: var(--muted); }
+.card.collapsed > :not(.card-head) { display: none; }
+.card.collapsed .card-head { padding-bottom: 12px; }
+.card.collapsed .lay { display: none; }
+.card:not(.collapsed) .file-sum { display: none; }
 .chip { font: 600 13px/1 var(--display); letter-spacing: .05em; padding: 4px 7px; border-radius: 4px; background: var(--soft); }
 .lay { margin-left: auto; font-size: 13px; color: var(--muted); }
 .lay b { font-family: var(--mono); color: var(--ink); font-weight: 500; }
@@ -2027,7 +2038,7 @@ const store = {
 const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946], contact: '' };
 $('#privacyWho').textContent = CLUB.name + (CLUB.contact ? ', Kontakt: ' + CLUB.contact : '');
 // Versionsnummer: jede Änderung zählt um 0.1 hoch (V1.0 … V1.9, dann V2.0 …); Änderungen stehen in CHANGELOG.md
-const APP_VERSION = '2.4';
+const APP_VERSION = '2.5';
 document.getElementById('appVersion').textContent = 'V' + APP_VERSION;
 const saved = store.get();
 function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }
@@ -3292,6 +3303,18 @@ layoutTopbar();
 
 // Ortszusatz im Prüfungsstand, nur wenn er mehrere Orte hat
 const examPlaceSuffix = (ex, t) => (ex.places.length > 1 ? ' · ' + placeLabel(Pruefung.placeOf(ex, t)) : '');
+// Aufgeklappte Trailkarten (Schlüssel: Startpunkt), gilt nur, solange die Seite offen ist
+const examOpen = new Set();
+function setCardOpen(card, key, open) {
+  if (open) examOpen.add(key); else examOpen.delete(key);
+  card.classList.toggle('collapsed', !open);
+  const head = card.querySelector('.card-head'); head.setAttribute('aria-expanded', open);
+  head.querySelector('.chev').textContent = open ? '▾' : '▸';
+}
+function setAllCards(open) {
+  state.exam.trails.forEach(t => { if (open) examOpen.add(t.ll[0].join()); else examOpen.delete(t.ll[0].join()); });
+  renderExam();
+}
 function renderExam() {
   renderPlaces();
   const ex = state.exam, host = $('#results');
@@ -3308,20 +3331,28 @@ function renderExam() {
     bRe.dataset.top = 'tbPlan';   // am Desktop in der oberen Leiste
     rb.append(bRe); host.append(rb);
   }
+  const allBar = document.createElement('div'); allBar.className = 'row'; allBar.style.gap = '6px';
+  allBar.append(mk('Alle aufklappen', () => setAllCards(true)), mk('Alle zuklappen', () => setAllCards(false)));
+  allBar.querySelectorAll('button').forEach(b => { b.className = 'small'; });
+  host.append(allBar);
   const cards = document.createElement('div'); cards.className = 'cards';
   ex.trails.forEach((t, i) => {
     const lv = Planner.LEVELS[t.level];
-    const card = document.createElement('article'); card.className = 'card' + (t.checked ? ' checked' : '');
+    const key = t.ll[0].join(), isOpen = examOpen.has(key);
+    const warn = !!(t.harder || (t.issues || []).length || (t.link && (t.link.gap || t.link.note)));
+    const card = document.createElement('article'); card.className = 'card' + (t.checked ? ' checked' : '') + (isOpen ? '' : ' collapsed');
     card.innerHTML = `
-      <div class="card-head"><span class="dot num" style="background:${COLORS[i % COLORS.length]}">${i + 1}</span>
+      <div class="card-head card-toggle" role="button" tabindex="0" aria-expanded="${isOpen}"><span class="dot num" style="background:${COLORS[i % COLORS.length]}">${i + 1}</span>
         <span class="name">Trail ${i + 1}${esc(examPlaceSuffix(ex, t))}</span><span class="chip">${esc(t.level)}</span>
-        <span class="lay">legen bis <b>${layTime(t.level)}</b></span></div>
+        <span class="sum">${+t.length} m${warn ? ' <b class="sum-warn" title="Hinweis oder Lücke, siehe aufgeklappt">⚠</b>' : ''}</span>
+        <span class="lay">legen bis <b>${layTime(t.level)}</b></span>
+        <label class="head-check" title="geprüft (abgefahren)"><input type="checkbox"${t.checked ? ' checked' : ''}> geprüft</label>
+        <span class="chev" aria-hidden="true">${isOpen ? '▾' : '▸'}</span></div>
       <div class="stats"><span><b>${+t.length}</b> m</span><span><b>${+t.turns}</b> Richtungswechsel</span><span><b>${+t.decisions - +t.turns}</b> zusätzliche Entscheidungsstelle${t.decisions - t.turns === 1 ? '' : 'n'}</span><span><b>${+t.crossings}</b> Kreuzung${t.crossings === 1 ? '' : 'en'}</span><span>Suchzeit <b>${lv.searchMin}</b> min</span></div>
       <div class="streets"></div>
       ${t.link === undefined ? '' : `<div class="streets">${t.link === null ? 'Beginn der Kette' : t.link.pending ? `<b style="color:var(--warn)">Noch nicht in die Kette eingeordnet:</b> ${+t.link.dist} m Luftlinie vom letzten Trail dieses Orts. „Kette neu aufbauen“ drücken.` : t.link.gap ? `<b style="color:var(--warn)">Lücke:</b> neuer Abschnitt, ${+t.link.dist} m Luftlinie vom vorigen Ziel` : `Weg vom vorigen Ziel: <b>${+t.link.dist} m</b>`}${t.link && t.link.note ? ` <span style="color:var(--warn)">· ${esc(t.link.note)}</span>` : ''}</div>`}
       ${t.imported ? `<div class="warnbox"><b>Importiert${t.name ? ': ' + esc(t.name) : ''}.</b> Die Strecke ist unverändert aus der GPX-Datei. Die Wegbeschreibung ist aus dem Wegenetz abgeleitet und ungefähr.${(t.issues || []).length ? '<ul>' + t.issues.map(x => `<li>${esc(x)}</li>`).join('') + '</ul>' : ''}</div>` : t.harder ? `<div class="warnbox"><b>Hinweis:</b> ${esc(t.harder)}. PO-konform und zulässig; an diesen Stellen könnte der Hund anders abbiegen. Beim Abfahren ansehen.</div>` : ''}
       <details class="checks steps-box"><summary>Trailverlauf: ${t.steps.length} Schritte</summary><ol class="steps"></ol></details>
-      <label class="check exam-check"><input type="checkbox"${t.checked ? ' checked' : ''}> geprüft (abgefahren)</label>
       ${t.file ? '<div class="streets file-line"></div>' : ''}
       <div class="actions"></div>`;
     card.querySelector('.streets').textContent = `${t.startStreet} → ${t.endStreet}`;
@@ -3334,7 +3365,11 @@ function renderExam() {
       if (s.options) { const o = document.createElement('span'); o.className = 'opts'; o.textContent = ` · ${s.options} Möglichkeiten`; li.querySelector('.t').append(o); }
       ol.append(li);
     });
-    card.querySelector('.exam-check input').onchange = e => { t.checked = e.target.checked; persistExam(); renderExam(); };
+    card.querySelector('.head-check input').onchange = e => { t.checked = e.target.checked; persistExam(); renderExam(); };
+    const head = card.querySelector('.card-head'), flip = () => setCardOpen(card, key, card.classList.contains('collapsed'));
+    head.onclick = e => { if (!e.target.closest('.head-check')) flip(); };
+    head.onkeydown = e => { if ((e.key === 'Enter' || e.key === ' ') && e.target === head) { e.preventDefault(); flip(); } };
+    if (t.file) { const fl2 = document.createElement('span'); fl2.className = 'sum file-sum'; fl2.textContent = t.file; fl2.title = t.file; head.querySelector('.sum').after(fl2); }
     const bRep = mk('Ersetzen', () => replaceTrail(i, bRep));
     if (t.imported) { bRep.disabled = true; bRep.title = 'Importierter Trail: bitte neu importieren'; }
     const bDel = mk('Löschen', () => deleteTrail(i));
@@ -3346,6 +3381,7 @@ function renderExam() {
   drawExam();
 }
 // Prüfungstag: Namen eintragen, zuwürfeln oder von Hand zuteilen (Teams nur innerhalb ihrer Stufe)
+let namesOpen = null;   // Aufklappblock der Namenslisten: null = automatisch (offen, solange leer)
 function renderAssign(host) {
   const ex = state.exam;
   const sec = document.createElement('div'); sec.className = 'assign';
@@ -3360,16 +3396,23 @@ function renderAssign(host) {
   const date = document.createElement('input'); date.type = 'date'; date.value = ex.date || '';
   date.onchange = () => { ex.date = date.value; persistExam(); };
   sec.append(field('Prüfungsdatum', date));
+  // Namenslisten in einem Aufklappblock; offen, solange noch keine Namen eingetragen sind (oder wie zuletzt gewählt)
+  const namesBox = document.createElement('details'); namesBox.className = 'checks names-box';
+  const nbSum = document.createElement('summary'); nbSum.textContent = 'Namen eintragen (Teams, Versteckpersonen)'; namesBox.append(nbSum);
+  const noNames = !Object.values(ex.names.teams).some(a => a.length) && !ex.names.vps.length;
+  namesBox.open = namesOpen === null ? noNames : namesOpen;
+  namesBox.ontoggle = () => { namesOpen = namesBox.open; };
   const list = (label, names, set) => {
     const ta = document.createElement('textarea'); ta.value = names.join('\n'); ta.placeholder = 'Ein Name pro Zeile';
     ta.onchange = () => { set(Pruefung.parseNames(ta.value)); persistExam(); drawTable(); };
-    sec.append(field(label, ta));
+    namesBox.append(field(label, ta));
   };
   for (const lv of Pruefung.LEVEL_KEYS) {
     const n = ex.trails.filter(t => t.level === lv).length;
     if (n) list(`Teams ${lv} (${n} Trail${n === 1 ? '' : 's'}) – Format „Hundeführer mit Hund“`, ex.names.teams[lv], v => { ex.names.teams[lv] = v; });
   }
   list(`Versteckpersonen (${ex.trails.length} Trails)`, ex.names.vps, v => { ex.names.vps = v; });
+  sec.append(namesBox);
   const row = document.createElement('div'); row.className = 'row'; row.style.gap = '6px';
   const note = document.createElement('p'); note.className = 'hint';
   const bDraw = mk('🎲 Zuwürfeln', () => {
