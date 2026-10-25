@@ -2,6 +2,14 @@
 
 Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Die aktuelle Version steht in der App neben der Überschrift.
 
+## V2.4 – 25.10.2026
+
+Obere Leiste am Desktop, kürzere Seitenleiste.
+
+- **Ab 1100 px Fensterbreite** gibt es oben eine Leiste mit den Alltagsknöpfen in drei Gruppen: Training/Prüfung und „Planen“ (Trails planen, Import Trails, Kette neu aufbauen), „Stand“ (Speichern, Öffnen) und „Ausgeben“ (Prüfungsbögen, Übersicht pro Ort, WhatsApp Start und Ende). Die Seitenleiste bleibt für Eingaben und Ergebnisse (Ortschaft, Teams, Rahmen, Trailkarten, Zuteilung) und wird dadurch deutlich kürzer.
+- **Handy und schmale Fenster** (unter 1100 px) bleiben wie bisher: alle Knöpfe in der Seitenleiste. Die Knöpfe werden zwischen beiden Anordnungen verschoben, nicht doppelt angelegt; beim Ändern der Fensterbreite wandern sie mit.
+- „Eingaben löschen und neu anfangen“ bleibt bewusst unten in der Seitenleiste.
+
 ## V2.3 – 25.10.2026
 
 Zuteilung: Übersicht, wer schon vergeben ist.
