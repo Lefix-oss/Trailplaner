@@ -2,6 +2,18 @@
 
 Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Die aktuelle Version steht in der App neben der Überschrift.
 
+## V2.2 – 25.10.2026
+
+Trails einzeln hinzufügen und löschen, Kette auf Knopfdruck neu aufbauen.
+
+- **Hinzufügen:** Ist schon ein Prüfungsstand da, bietet der Import „Zu den vorhandenen Trails hinzufügen“ (Standard) oder „Alles ersetzen“. Beim Hinzufügen bleiben vorhandene Trails, Häkchen „geprüft“, Team und VP unverändert; die neuen Trails kommen ans Ende. Der Abstand zu den vorhandenen Trails wird mitgeprüft. Eine Datei, die schon importiert ist (gleicher Dateiname oder gleicher Verlauf), wird erkannt und nicht angehakt.
+- **Löschen:** Jede Trailkarte hat „Löschen“ (mit Nachfrage). Die Nummern rücken auf; der letzte Trail lässt sich nicht löschen.
+- **Kette neu aufbauen:** Knopf über den Trailkarten. Berechnet Reihenfolge und Übergangswege der importierten Trails neu (gleiche Regeln wie beim Import, V2.0). Die Trails selbst bleiben unverändert, „geprüft“, Team, VP und Dateiname wandern mit dem Trail; die Nummern können sich ändern (Nachfrage vorher). Nur wenn alle Trails importiert sind.
+- **Kein automatischer Neuaufbau:** Nach Hinzufügen oder Löschen bleibt die bisherige Reihenfolge stehen. Der betroffene Übergang steht als „Noch nicht in die Kette eingeordnet“, dazu ein Hinweis mit Knopf. So ändern sich bereits ausgedruckte oder ausgeloste Nummern nicht von selbst.
+- **Nach Review nachgebessert:** Hinweis und Knopf „Kette neu aufbauen“ erscheinen nur, wenn alle Trails importiert sind (bei gemischten Ständen gibt es keinen Neuaufbau, also auch keinen Hinweis). Der Neuaufbau prüft nach dem Warten auf das Wegenetz noch einmal, ob Stand und Modus gleich geblieben sind. Dublettenerkennung beim Hinzufügen: gleicher Verlauf, oder gleicher Dateiname mit fast gleicher Länge (viele Mapy-Exporte heißen „export.gpx“).
+- Bekannt, nicht geändert: Abstand zu vorhandenen Trails wird nur in eine Richtung geprüft (neuer Trail gegen vorhandene Linie); in einem gemischten Stand sind neue Trails ans Ende gehängt, ohne dass die Orte zusammenhängen.
+- Gespeicherte Stände ohne diese Felder laufen unverändert weiter. Die Ketten-Berechnung beim Import ist in eine gemeinsame Funktion gewandert (Ergebnis wie vorher).
+
 ## V2.1 – 23.10.2026
 
 Übersicht pro Ort und Dateiname bei importierten Trails.

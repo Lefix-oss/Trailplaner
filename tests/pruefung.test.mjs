@@ -60,6 +60,19 @@ test('serializeExam/parseExam: Hin und zurück ohne Verlust', () => {
   assert.deepEqual(Pruefung.parseExam(Pruefung.serializeExam(exam)), exam);
 });
 
+test('parseExam behält „Kette veraltet“, Dateiname und nicht eingeordneten Übergang', () => {
+  const t = (extra = {}) => ({ level: 'MT-I', ll: [[49.65, 9.95], [49.651, 9.951]], length: 305, turns: 1, decisions: 1, crossings: 0, steps: [], startStreet: 'A', endStreet: 'B', checked: false, harder: '', place: 'A', imported: true, file: 'export (4).gpx', ...extra });
+  const exam = { format: 'trailplaner-pruefung', version: 2, savedAt: null, chainStale: true,
+    places: [{ id: 'A', name: 'Musterdorf', center: { lat: 49.65, lon: 9.95 }, terrain: 'frei', radius: 1200 }], settings: {}, date: '2026-10-31',
+    trails: [t({ link: null }), t({ link: { dist: 120, gap: true, ll: null, pending: true } })],
+    names: { teams: { 'MT-I': [], 'MT-II': [], 'MT-III': [] }, vps: [] }, assign: [{ team: '', vp: '' }, { team: '', vp: '' }] };
+  assert.deepEqual(Pruefung.parseExam(Pruefung.serializeExam(exam)), exam);
+  const bad = JSON.parse(Pruefung.serializeExam(exam)); bad.trails[1].link.pending = 'ja';
+  assert.throws(() => Pruefung.parseExam(JSON.stringify(bad)), /beschädigt/);
+  const longFile = JSON.parse(Pruefung.serializeExam(exam)); longFile.trails[0].file = 'x'.repeat(121);
+  assert.throws(() => Pruefung.parseExam(JSON.stringify(longFile)), /beschädigt/);
+});
+
 test('parseExam lehnt fremde und kaputte Dateien mit deutscher Meldung ab', () => {
   assert.throws(() => Pruefung.parseExam('<gpx></gpx>'), /kein gespeicherter Trailplan/);
   assert.throws(() => Pruefung.parseExam('{"format":"x"}'), /kein gespeicherter Trailplan/);

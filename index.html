@@ -1947,6 +1947,7 @@ const Pruefung = (() => {
       if (t.link !== undefined && t.link !== null) {
         if (typeof t.link !== 'object' || !num(t.link.dist) || (t.link.ll != null && !(Array.isArray(t.link.ll) && t.link.ll.every(pt)))) throw bad();
         if (t.link.note !== undefined && !(typeof t.link.note === 'string' && t.link.note.length <= 300)) throw bad();
+        if (t.link.pending !== undefined && typeof t.link.pending !== 'boolean') throw bad();
       }
       if (t.steps !== undefined && !t.steps.every(s => s && typeof s === 'object' && num(s.at) && (s.options === undefined || num(s.options)) && typeof s.text === 'string' && typeof s.kind === 'string')) throw bad();
       if (t.imported !== undefined && typeof t.imported !== 'boolean') throw bad();
@@ -1957,6 +1958,7 @@ const Pruefung = (() => {
       if (typeof t.checked !== 'boolean') t.checked = false;
       if (typeof t.harder !== 'string') t.harder = '';
     });
+    if (ex.chainStale !== true) delete ex.chainStale;
     const names = ex.names || {};
     const teams = names.teams || {};
     ex.names = { teams: Object.fromEntries(LEVEL_KEYS.map(k => [k, Array.isArray(teams[k]) ? teams[k] : []])), vps: Array.isArray(names.vps) ? names.vps : [] };
@@ -1983,7 +1985,7 @@ const store = {
 const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946], contact: '' };
 $('#privacyWho').textContent = CLUB.name + (CLUB.contact ? ', Kontakt: ' + CLUB.contact : '');
 // Versionsnummer: jede Änderung zählt um 0.1 hoch (V1.0 … V1.9, dann V2.0 …); Änderungen stehen in CHANGELOG.md
-const APP_VERSION = '2.1';
+const APP_VERSION = '2.2';
 document.getElementById('appVersion').textContent = 'V' + APP_VERSION;
 const saved = store.get();
 function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }
@@ -2782,10 +2784,10 @@ async function replanPlace(pid) {
 // ---------- GPX-Import ----------
 // Trails aus GPX-Dateien (z. B. Mapy.com) einlesen, prüfen, zur Kette ordnen und als Prüfungsstand übernehmen.
 // Die Linien werden nie verändert; die Zuordnung zum Wegenetz dient nur der Regelprüfung und der Wegbeschreibung.
-const imp = { items: [], order: [], info: [], conflicts: [], newPlaces: [], graphs: new Map(), busy: false };
+const imp = { items: [], order: [], info: [], conflicts: [], newPlaces: [], graphs: new Map(), busy: false, mode: 'replace' };   // mode: 'add' (zum vorhandenen Stand hinzufügen) | 'replace'
 $('#importBtn').addEventListener('click', () => { if (!imp.busy) { imp.items.length ? showImport() : openImport(); } });
 $('#importFile').addEventListener('change', e => { const f = [...e.target.files]; e.target.value = ''; if (f.length) evaluateFiles(f); });
-function openImport() { imp.items = []; imp.order = []; imp.info = []; imp.conflicts = []; imp.newPlaces = []; showImport(); }
+function openImport() { imp.items = []; imp.order = []; imp.info = []; imp.conflicts = []; imp.newPlaces = []; imp.mode = state.exam && state.exam.trails.length ? 'add' : 'replace'; showImport(); }
 function showImport() { $('#importPanel').hidden = false; renderImport(); $('#importPanel').scrollIntoView({ block: 'nearest' }); }
 function closeImport() {
   if ($('#importPanel').hidden) return;
@@ -2888,7 +2890,22 @@ function checkItem(it) {
   it.status = !c.matched || hard.length ? 'bad' : (c.far > 0.1 || soft.length ? 'warn' : 'ok');
   it.take = true; it.needsPlace = false;
   c.issues = it.reasons.filter(r => !r.startsWith('Hinweis:'));   // Befunde für Trailkarte und gespeicherten Stand
+  markDuplicate(it);
 }
+// Beim Hinzufügen: Trail, der schon im Prüfungsstand liegt (gleicher Dateiname oder gleicher Verlauf), wird nicht angehakt
+function markDuplicate(it) {
+  it.reasons = it.reasons.filter(r => !r.startsWith('Schon importiert'));
+  let n = -1;
+  if (it.c && importAdding()) {
+    const s = it.ll[0], e = it.ll[it.ll.length - 1];
+    // gleicher Verlauf; oder gleicher Dateiname mit fast gleicher Länge (Mapy nennt viele Exporte „export.gpx“)
+    n = state.exam.trails.findIndex(t => (llDist(t.ll[0], s) < 3 && llDist(t.ll[t.ll.length - 1], e) < 3 && Math.abs(t.length - it.len) < 5)
+      || (t.file && t.file === it.name && Math.abs(t.length - it.len) < 5));
+  }
+  if (n >= 0) { it.reasons.unshift(`Schon importiert: entspricht Trail ${n + 1}. Nicht angehakt; mit Haken wird er trotzdem hinzugefügt.`); it.dup = true; it.take = false; }
+  else if (it.dup) { it.dup = false; if (it.c) it.take = true; }
+}
+const setImportMode = m => { imp.mode = m; imp.items.forEach(markDuplicate); buildImportChain(); renderImport(); };
 // Ort von Hand wählen (Trail ohne eindeutigen Ort)
 async function choosePlace(it, pid) {
   const place = importPlaces().find(p => p.id === pid);
@@ -2904,29 +2921,30 @@ async function choosePlace(it, pid) {
 }
 
 // Kette je Ort aus den angehakten Trails (Reihenfolge mit den geringsten Übergangskosten); Konflikte (Abstand) nur melden
-function buildImportChain() {
-  imp.order = []; imp.info = []; imp.conflicts = [];
-  const minDist = +$('#minDist').value, take = imp.items.filter(i => i.take && i.c);
+// Kette aus fertigen Kandidaten (c.G und c.place gesetzt). offset: Zahl der Trails davor (nur für die Nummern in den Hinweisen);
+// existing: schon vorhandene Trails, zu denen der Abstand geprüft wird. Ergebnis { order, info, conflicts }
+function chainCore(cands, places, minDist, offset = 0, existing = []) {
+  const out = { order: [], info: [], conflicts: [] };
   const R = Planner.rng(1);
-  for (const p of importPlaces()) {
-    const its = take.filter(i => i.place.id === p.id);
+  for (const p of places) {
+    const its = cands.filter(c => c.place === p.id);
     if (!its.length) continue;
-    const G = its[0].c.G, W = G._walk;
-    const teams = its.map((i, k) => ({ name: 'T' + k, level: i.level }));
+    const G = its[0].G, W = G._walk;
+    const teams = its.map((c, k) => ({ name: 'T' + k, level: c.tr.level }));
     const pools = {};
-    for (const i of its) (pools[i.level] = pools[i.level] || { list: [] }).list.push(i.c);
+    for (const c of its) (pools[c.tr.level] = pools[c.tr.level] || { list: [] }).list.push(c);
     const ch = Planner.chain(G, W, teams, pools, R, minDist, { fixed: true });
     ch.order.forEach((c, k) => {
       const prev = ch.order[k - 1];
       const air = k === 0 ? 0 : Math.hypot(prev.v.pts[prev.v.pts.length - 1][0] - c.v.pts[0][0], prev.v.pts[prev.v.pts.length - 1][1] - c.v.pts[0][1]);
       c.link = k === 0 ? null : ch.links[k] ? { dist: ch.links[k].dist, gap: false, pts: ch.links[k].pts, air }
         : { gap: true, dist: air, air, why: ch.notes && ch.notes[k] };
-      imp.order.push(c);
+      out.order.push(c);
     });
-    imp.info.push({ place: placeLabel(p), gaps: ch.gaps, n: ch.order.length });
+    out.info.push({ place: placeLabel(p), gaps: ch.gaps, n: ch.order.length });
   }
   // Hinweise zum Übergang (keine Sperren: importierte Trails wurden bewusst so geplant)
-  imp.order.forEach((c, k) => {
+  out.order.forEach((c, k) => {
     const L = c.link;
     if (!L) return;
     const air = Math.round(L.air), parts = [];
@@ -2935,10 +2953,10 @@ function buildImportChain() {
       if (L.dist > 250) parts.push('langer Übergang (über 250 m)');
       if (air > 0 && L.dist > 3 * air) parts.push(`Umweg: ${(L.dist / air).toFixed(1).replace('.', ',')}-fache Luftlinie`);
     } else {
-      const nums = ((L.why && L.why.by) || []).map(x => imp.order.indexOf(x) + 1).filter(n => n > 0)
-        .map(n => (n === k + 1 ? `den weiteren Verlauf von Trail ${n}` : `Trail ${n}`)).join(', ');
-      parts.unshift(!L.why ? 'kein zulässiger Fußweg' : L.why.why === 'start' ? `Start von Trail ${k + 1} nur über ${nums || 'einen späteren Trail'} erreichbar`
-        : L.why.why === 'ziel' ? `vom Ziel von Trail ${k} führt jeder Weg über ${nums || 'einen späteren Trail'}` : 'kein zulässiger Fußweg bis 1,5 km gefunden, der keinen späteren Trail kreuzt oder benutzt (1,5 km ist die technische Grenze der Suche, keine Regel)');
+      const nums = ((L.why && L.why.by) || []).map(x => out.order.indexOf(x) + 1 + offset).filter(n => n > offset)
+        .map(n => (n === k + 1 + offset ? `den weiteren Verlauf von Trail ${n}` : `Trail ${n}`)).join(', ');
+      parts.unshift(!L.why ? 'kein zulässiger Fußweg' : L.why.why === 'start' ? `Start von Trail ${k + 1 + offset} nur über ${nums || 'einen späteren Trail'} erreichbar`
+        : L.why.why === 'ziel' ? `vom Ziel von Trail ${k + offset} führt jeder Weg über ${nums || 'einen späteren Trail'}` : 'kein zulässiger Fußweg bis 1,5 km gefunden, der keinen späteren Trail kreuzt oder benutzt (1,5 km ist die technische Grenze der Suche, keine Regel)');
     }
     L.note = parts.join('; ');
   });
@@ -2953,35 +2971,63 @@ function buildImportChain() {
     }
     return m;
   };
-  imp.order.forEach(c => { c.conflictIssues = []; });
-  for (let a = 0; a < imp.order.length; a++) for (let b = a + 1; b < imp.order.length; b++) {
-    const A = imp.order[a], B = imp.order[b], d = Math.min(near(A, B), near(B, A));
+  out.order.forEach(c => { c.conflictIssues = []; });
+  for (let a = 0; a < out.order.length; a++) for (let b = a + 1; b < out.order.length; b++) {
+    const A = out.order[a], B = out.order[b], d = Math.min(near(A, B), near(B, A));
     if (d < minDist) {
-      imp.conflicts.push(`Trail ${a + 1} und Trail ${b + 1} liegen nur ${Math.floor(d)} m auseinander (eingestellt: mind. ${minDist} m).`);
-      A.conflictIssues.push(`Nur ${Math.floor(d)} m Abstand zu Trail ${b + 1} (eingestellt: mind. ${minDist} m)`);
-      B.conflictIssues.push(`Nur ${Math.floor(d)} m Abstand zu Trail ${a + 1} (eingestellt: mind. ${minDist} m)`);
+      out.conflicts.push(`Trail ${a + 1 + offset} und Trail ${b + 1 + offset} liegen nur ${Math.floor(d)} m auseinander (eingestellt: mind. ${minDist} m).`);
+      A.conflictIssues.push(`Nur ${Math.floor(d)} m Abstand zu Trail ${b + 1 + offset} (eingestellt: mind. ${minDist} m)`);
+      B.conflictIssues.push(`Nur ${Math.floor(d)} m Abstand zu Trail ${a + 1 + offset} (eingestellt: mind. ${minDist} m)`);
     }
   }
+  // vorhandene Trails: Nummer 1 bis offset
+  out.order.forEach((A, a) => existing.forEach((E, m) => {
+    const d = near(A, E);
+    if (d < minDist) {
+      out.conflicts.push(`Trail ${a + 1 + offset} und vorhandener Trail ${m + 1} liegen nur ${Math.floor(d)} m auseinander (eingestellt: mind. ${minDist} m).`);
+      A.conflictIssues.push(`Nur ${Math.floor(d)} m Abstand zu Trail ${m + 1} (eingestellt: mind. ${minDist} m)`);
+    }
+  }));
+  return out;
+}
+// Hinzufügen zu einem vorhandenen Prüfungsstand (statt alles zu ersetzen)
+const importAdding = () => imp.mode === 'add' && !!state.exam && state.exam.trails.length > 0;
+function buildImportChain() {
+  const take = imp.items.filter(i => i.take && i.c), add = importAdding();
+  const r = chainCore(take.map(i => i.c), importPlaces(), +$('#minDist').value, add ? state.exam.trails.length : 0, add ? state.exam.trails : []);
+  imp.order = r.order; imp.info = r.info; imp.conflicts = r.conflicts;
   drawImportPreview();
 }
 function drawImportPreview() {
-  if (!imp.order.length) { trailLayer.clearLayers(); return; }
+  const add = importAdding();
+  if (!imp.order.length) { if (add) drawExam(false); else trailLayer.clearLayers(); return; }
   imp.order.forEach(c => { c.issues = (c.issues || []).filter(x => !/^Nur \d+ m Abstand/.test(x)).concat(c.conflictIssues || []); });
-  const trails = imp.order.map(snapshot);
+  const trails = (add ? state.exam.trails : []).concat(imp.order.map(snapshot));
   const ids = new Set(trails.map(t => t.place));
-  drawExam(true, { places: importPlaces().filter(p => ids.has(p.id)), trails });
+  const places = add ? state.exam.places.concat(importPlaces().filter(p => !state.exam.places.some(q => q.id === p.id))) : importPlaces();
+  drawExam(true, { places: places.filter(p => ids.has(p.id)), trails });
 }
 // Übergang vom vorigen Trail als Text; warn: Lücke oder großer Sprung
 function transitionText(k) {
-  const c = imp.order[k], prev = imp.order[k - 1];
+  const c = imp.order[k], prev = imp.order[k - 1], off = importAdding() ? state.exam.trails.length : 0;
+  if (!c.link && importAdding() && state.exam.trails.some(t => t.place === c.place)) return { text: 'Noch nicht in die vorhandene Kette eingeordnet („Kette neu aufbauen“)', warn: false };
   if (!c.link) return { text: prev && prev.place !== c.place ? `Ortswechsel: Beginn der Kette in ${placeLabel(importPlaces().find(p => p.id === c.place) || { id: c.place })}` : 'Beginn der Kette', warn: false };
-  if (!c.link.gap) return { text: `Fußweg ${Math.round(c.link.dist)} m vom Ziel von Trail ${k}${c.link.note ? ' – ' + c.link.note : ''}`, warn: !!c.link.note };
-  return { text: `Lücke: ${Math.round(c.link.dist)} m Luftlinie vom Ziel von Trail ${k}${c.link.note ? ' – ' + c.link.note : ''}`, warn: true };
+  if (!c.link.gap) return { text: `Fußweg ${Math.round(c.link.dist)} m vom Ziel von Trail ${k + off}${c.link.note ? ' – ' + c.link.note : ''}`, warn: !!c.link.note };
+  return { text: `Lücke: ${Math.round(c.link.dist)} m Luftlinie vom Ziel von Trail ${k + off}${c.link.note ? ' – ' + c.link.note : ''}`, warn: true };
 }
 
 function renderImport() {
   const host = $('#importPanel'); host.innerHTML = '';
   const h = document.createElement('h2'); h.textContent = 'Import Trails (GPX)'; host.append(h);
+  if (state.exam && state.exam.trails.length) {
+    const mw = document.createElement('div'); mw.className = 'imp-mode';
+    for (const [v, label] of [['add', `Zu den ${state.exam.trails.length} vorhandenen Trails hinzufügen (die vorhandenen bleiben unverändert)`], ['replace', 'Alles ersetzen (bisheriger Prüfungsstand und Zuteilung werden verworfen)']]) {
+      const lb = document.createElement('label'); lb.className = 'check';
+      const r = document.createElement('input'); r.type = 'radio'; r.name = 'impMode'; r.checked = imp.mode === v; r.disabled = imp.busy; r.onchange = () => setImportMode(v);
+      lb.append(r, document.createTextNode(' ' + label)); mw.append(lb);
+    }
+    host.append(mw);
+  }
   const drop = document.createElement('div'); drop.className = 'imp-drop';
   drop.textContent = imp.busy ? 'Werte aus … bitte warten.' : 'GPX-Dateien hierher ziehen oder auswählen (z. B. Export aus Mapy.com).';
   if (!imp.busy) {
@@ -3014,7 +3060,7 @@ function renderImport() {
     const t1 = document.createElement('div');
     const sp = document.createElement('b'); sp.className = 'st-' + st; sp.textContent = mark + ' ';
     const pos = it.c ? imp.order.indexOf(it.c) : -1;
-    if (pos >= 0) { const nb = document.createElement('b'); nb.textContent = `Trail ${pos + 1} · `; t1.append(sp, nb); } else t1.append(sp);
+    if (pos >= 0) { const nb = document.createElement('b'); nb.textContent = `Trail ${pos + 1 + (importAdding() ? state.exam.trails.length : 0)} · `; t1.append(sp, nb); } else t1.append(sp);
     t1.append(document.createTextNode(it.name));
     const t2 = document.createElement('div'); t2.className = 'meta';
     const pl = it.place ? `${placeLabel(it.place)}${it.place.proposed ? ' (neuer Ort)' : ''}` : '';
@@ -3039,7 +3085,7 @@ function renderImport() {
   if (imp.items.length && !imp.busy) {
     const sum = document.createElement('p'); sum.className = 'imp-sum';
     const n = imp.order.length;
-    sum.textContent = n ? `${n} Trail${n === 1 ? '' : 's'} werden übernommen.${chainStatus(imp.info)}` : 'Es ist kein Trail zum Übernehmen angehakt.';
+    sum.textContent = n ? `${n} Trail${n === 1 ? '' : 's'} werden ${importAdding() ? 'hinzugefügt' : 'übernommen'}.${chainStatus(imp.info)}` : 'Es ist kein Trail zum Übernehmen angehakt.';
     host.append(sum);
     if (imp.conflicts.length) { const ul = document.createElement('ul'); ul.className = 'imp-conf'; imp.conflicts.forEach(r => { const li = document.createElement('li'); li.textContent = r; ul.append(li); }); host.append(ul); }
   }
@@ -3057,13 +3103,15 @@ function applyImport() {
   const stale = order.some(c => !fresh.some(p => p.id === c.place) && !state.places.some(p => p.id === c.place && p.center))
     || fresh.some(p => state.places.some(q => q.id === p.id && q.center));
   if (stale) { setStatus('Die Ortsliste wurde geändert. Bitte die Dateien noch einmal einlesen.', true); return; }
-  if (state.exam && !confirm('Der Import ersetzt den aktuellen Prüfungsstand und die Teamliste. Fortfahren?')) return;
+  const add = importAdding();
+  if (!add && state.exam && !confirm('Der Import ersetzt den aktuellen Prüfungsstand und die Teamliste. Fortfahren?')) return;
   for (const p of fresh) {
     const place = { id: p.id, name: p.name, center: p.center, terrain: p.terrain, radius: p.radius };
     const k = state.places.findIndex(q => q.id === p.id);
     if (k >= 0) state.places[k] = place; else state.places.push(place);
   }
   state.places.sort((a, b) => a.id.localeCompare(b.id));
+  if (add) { applyImportAdd(order, fresh.length); return; }
   state.teams = order.map((c, i) => ({ name: `Team ${i + 1}`, level: c.tr.level, place: c.place }));
   state.planTeams = state.teams.map(t => ({ ...t }));
   state.plans = [order]; state.active = 0; state.pools = {}; state.seen = order.map(c => new Set([c.id]));
@@ -3074,6 +3122,100 @@ function applyImport() {
   renderResults();
   drawExam(true);
   setStatus(`${order.length} Trail${order.length === 1 ? '' : 's'} importiert${fresh.length ? `, ${fresh.length} Ort${fresh.length === 1 ? '' : 'e'} neu in der Ortsliste` : ''}.${chainStatus(info)} Strecken unverändert aus den GPX-Dateien. Vor Ort prüfen: Zugang, Sicht, Abholung, Verkehr.`);
+}
+// Neue Trails hinten an den vorhandenen Prüfungsstand hängen; vorhandene Trails, Häkchen und Zuteilung bleiben unverändert.
+// Der erste neue Trail eines Orts mit vorhandenen Trails ist „noch nicht eingeordnet“, bis die Kette neu aufgebaut wird.
+function applyImportAdd(order, freshCount) {
+  const ex = state.exam, n0 = ex.trails.length, info = imp.info.slice();
+  for (const id of new Set(order.map(c => c.place))) {
+    if (ex.places.some(p => p.id === id)) continue;
+    const p = state.places.find(q => q.id === id);
+    ex.places.push({ id: p.id, name: p.name || '', center: p.center, terrain: p.terrain || 'ort', radius: p.radius || 1200 });
+  }
+  ex.places.sort((a, b) => a.id.localeCompare(b.id));
+  const lastOf = {};
+  ex.trails.forEach(t => { lastOf[t.place] = t; });
+  const teamsAligned = state.teams.length === n0;
+  const allImported = ex.trails.every(t => t.imported);   // die neuen Trails sind alle importiert
+  order.forEach((c, k) => {
+    const sn = snapshot(c);
+    const prevLast = lastOf[c.place];
+    if (prevLast && (k === 0 || order[k - 1].place !== c.place)) {
+      const e = prevLast.ll[prevLast.ll.length - 1];
+      sn.link = { dist: Math.round(llDist(e, sn.ll[0])), gap: true, ll: null };
+      if (allImported) sn.link.pending = true;   // nur dann gibt es den Knopf „Kette neu aufbauen“
+    }
+    ex.trails.push(sn); ex.assign.push({ team: '', vp: '' }); state.examSeen.push(new Set());
+    if (teamsAligned) state.teams.push({ name: `Team ${n0 + k + 1}`, level: c.tr.level, place: c.place });
+    lastOf[c.place] = sn;
+  });
+  if (teamsAligned) state.planTeams = state.teams.map(t => ({ ...t }));
+  if (allImported) ex.chainStale = true;
+  persistExam(); persist(); renderPlaces(); drawArea(); renderTeams();
+  closeImport();
+  renderResults();
+  drawExam(true);
+  setStatus(`${order.length} Trail${order.length === 1 ? '' : 's'} hinzugefügt (Trail ${n0 + 1}${order.length > 1 ? ' bis ' + (n0 + order.length) : ''})${freshCount ? `, ${freshCount} Ort${freshCount === 1 ? '' : 'e'} neu in der Ortsliste` : ''}. Vorhandene Trails unverändert. Die Kette ist noch nicht neu aufgebaut: „Kette neu aufbauen“ drücken, wenn die Reihenfolge angepasst werden soll.`);
+}
+// Einen Trail aus dem Prüfungsstand entfernen; die Nummern rücken auf, der Übergang des Nachfolgers gilt als veraltet
+function deleteTrail(i) {
+  const ex = state.exam, t = ex.trails[i];
+  if (ex.trails.length < 2) { setStatus('Der letzte Trail lässt sich nicht löschen. Zum Neuanfang „Eingaben löschen und neu anfangen“ verwenden.', true); return; }
+  const a = ex.assign[i] || {};
+  if (!confirm(`Trail ${i + 1}${t.file ? ' (' + t.file + ')' : ''} löschen?${a.team || a.vp ? ' Die Zuteilung (Team, VP) dieses Trails geht verloren.' : ''} Die Nummern der folgenden Trails rücken auf.`)) return;
+  ex.trails.splice(i, 1); ex.assign.splice(i, 1); state.examSeen.splice(i, 1);
+  if (state.teams.length === ex.trails.length + 1) { state.teams.splice(i, 1); state.planTeams = state.teams.map(x => ({ ...x })); persist(); renderTeams(); }
+  const nx = ex.trails[i];
+  if (nx && nx.place === t.place && nx.link !== undefined) {
+    let j = i - 1; while (j >= 0 && ex.trails[j].place !== t.place) j--;
+    nx.link = j < 0 ? null : { dist: Math.round(llDist(ex.trails[j].ll[ex.trails[j].ll.length - 1], nx.ll[0])), gap: true, ll: null };
+    if (j >= 0 && ex.trails.every(x => x.imported)) nx.link.pending = true;
+  }
+  if (ex.trails.every(x => x.imported)) ex.chainStale = true;
+  persistExam(); renderExam();
+  setStatus(`Trail ${i + 1} gelöscht.${ex.chainStale ? ' Die Kette ist nicht mehr aktuell: „Kette neu aufbauen“ drücken.' : ''}`);
+}
+// Reihenfolge und Übergangswege aller importierten Trails neu berechnen (Trails selbst bleiben unverändert).
+// Häkchen „geprüft“, Zuteilung und Dateiname wandern mit ihrem Trail.
+async function rebuildChain(btn) {
+  const ex = state.exam, s = ex.settings || {};
+  if (!ex.trails.length || ex.trails.some(t => !t.imported)) { setStatus('Neu aufbauen geht nur, wenn alle Trails importiert sind.', true); return; }
+  const used = ex.assign.some(a => a.team || a.vp);
+  if (!confirm(`Reihenfolge und Übergangswege neu berechnen? Die Trails bleiben unverändert, die Nummern können sich aber ändern. Häkchen „geprüft“${used ? ', Team und VP' : ''} wandern mit dem Trail.`)) return;
+  btn.disabled = true; btn.textContent = 'Baue Kette neu auf …';
+  try {
+    const places = ex.places.filter(p => ex.trails.some(t => t.place === p.id));
+    radarStart(places);
+    const graphs = new Map();
+    try { for (const p of places) graphs.set(p.id, await graphFor(p, p.radius || s.radius || 1200)); }
+    catch { setStatus('OpenStreetMap ist gerade nicht erreichbar. Die Kette bleibt unverändert.', true); return; }
+    if (state.exam !== ex || planMode !== 'pruefung') return;   // Prüfungsstand oder Modus wurde inzwischen gewechselt
+    await tick();
+    if (state.exam !== ex || planMode !== 'pruefung') return;
+    const cands = ex.trails.map((t, k) => {
+      const place = places.find(p => p.id === t.place), G = graphs.get(place.id);
+      Planner.setTerrain(G, place.terrain || 'ort', s.allowPaths, s.avoidLoops, s.strict);
+      const W = G._walk || (G._walk = Planner.walkGraph(G));
+      const c = Planner.trackCandidate(G, W, t.ll, t.level, { id: `${place.id}:re${k}`, name: t.name, file: t.file });
+      c.G = G; c.place = place.id; c.old = k;
+      c.issues = (t.issues || []).filter(x => !/^Nur \d+ m Abstand/.test(x));
+      return c;
+    });
+    const r = chainCore(cands, places, +s.minDist || +$('#minDist').value, 0);
+    r.order.forEach(c => { c.issues = c.issues.concat(c.conflictIssues || []); });
+    const old = ex.trails, oldAssign = ex.assign, oldSeen = state.examSeen;
+    ex.trails = r.order.map(c => { const sn = snapshot(c); sn.checked = !!old[c.old].checked; return sn; });
+    ex.assign = r.order.map(c => oldAssign[c.old] || { team: '', vp: '' });
+    state.examSeen = r.order.map(c => oldSeen[c.old] || new Set());
+    if (state.teams.length === old.length) { state.teams = r.order.map((c, i) => ({ name: `Team ${i + 1}`, level: c.tr.level, place: c.place })); state.planTeams = state.teams.map(t => ({ ...t })); persist(); renderTeams(); }
+    ex.chainStale = false;
+    const moved = r.order.some((c, i) => c.old !== i);
+    persistExam(); renderExam(); drawExam(true);
+    setStatus(`Kette neu aufgebaut: ${moved ? 'Reihenfolge geändert, Nummern neu vergeben' : 'Reihenfolge unverändert'}.${chainStatus(r.info)}${r.conflicts.length ? ` ${r.conflicts.length} Abstandshinweis${r.conflicts.length === 1 ? '' : 'e'} (siehe Trailkarten).` : ''}`);
+  } catch (e) {
+    console.error(e);
+    setStatus(`Interner Fehler beim Neuaufbau: ${e && e.message ? e.message : e}. Die Kette bleibt unverändert.`, true);
+  } finally { radarStop(); if (btn.isConnected) { btn.disabled = false; btn.textContent = '🔗 Kette neu aufbauen'; } }
 }
 
 // Ortszusatz im Prüfungsstand, nur wenn er mehrere Orte hat
@@ -3087,6 +3229,12 @@ function renderExam() {
   const count = document.createElement('p'); count.className = 'hint';
   count.innerHTML = `<b>${done} von ${ex.trails.length}</b> Trails geprüft (abgefahren). Fällt ein Trail beim Abfahren durch: „Ersetzen“.`;
   host.append(count);
+  if (ex.trails.length && ex.trails.every(t => t.imported)) {
+    const rb = document.createElement('div'); rb.className = ex.chainStale ? 'warnbox' : 'hint';
+    if (ex.chainStale) rb.innerHTML = '<b>Die Kette ist nicht mehr aktuell</b> (Trails hinzugefügt oder gelöscht). ';
+    const bRe = mk('🔗 Kette neu aufbauen', () => rebuildChain(bRe)); if (ex.chainStale) bRe.className = 'primary small';
+    rb.append(bRe); host.append(rb);
+  }
   const cards = document.createElement('div'); cards.className = 'cards';
   ex.trails.forEach((t, i) => {
     const lv = Planner.LEVELS[t.level];
@@ -3097,7 +3245,7 @@ function renderExam() {
         <span class="lay">legen bis <b>${layTime(t.level)}</b></span></div>
       <div class="stats"><span><b>${+t.length}</b> m</span><span><b>${+t.turns}</b> Richtungswechsel</span><span><b>${+t.decisions - +t.turns}</b> zusätzliche Entscheidungsstelle${t.decisions - t.turns === 1 ? '' : 'n'}</span><span><b>${+t.crossings}</b> Kreuzung${t.crossings === 1 ? '' : 'en'}</span><span>Suchzeit <b>${lv.searchMin}</b> min</span></div>
       <div class="streets"></div>
-      ${t.link === undefined ? '' : `<div class="streets">${t.link === null ? 'Beginn der Kette' : t.link.gap ? `<b style="color:var(--warn)">Lücke:</b> neuer Abschnitt, ${+t.link.dist} m Luftlinie vom vorigen Ziel` : `Weg vom vorigen Ziel: <b>${+t.link.dist} m</b>`}${t.link && t.link.note ? ` <span style="color:var(--warn)">· ${esc(t.link.note)}</span>` : ''}</div>`}
+      ${t.link === undefined ? '' : `<div class="streets">${t.link === null ? 'Beginn der Kette' : t.link.pending ? `<b style="color:var(--warn)">Noch nicht in die Kette eingeordnet:</b> ${+t.link.dist} m Luftlinie vom letzten Trail dieses Orts. „Kette neu aufbauen“ drücken.` : t.link.gap ? `<b style="color:var(--warn)">Lücke:</b> neuer Abschnitt, ${+t.link.dist} m Luftlinie vom vorigen Ziel` : `Weg vom vorigen Ziel: <b>${+t.link.dist} m</b>`}${t.link && t.link.note ? ` <span style="color:var(--warn)">· ${esc(t.link.note)}</span>` : ''}</div>`}
       ${t.imported ? `<div class="warnbox"><b>Importiert${t.name ? ': ' + esc(t.name) : ''}.</b> Die Strecke ist unverändert aus der GPX-Datei. Die Wegbeschreibung ist aus dem Wegenetz abgeleitet und ungefähr.${(t.issues || []).length ? '<ul>' + t.issues.map(x => `<li>${esc(x)}</li>`).join('') + '</ul>' : ''}</div>` : t.harder ? `<div class="warnbox"><b>Hinweis:</b> ${esc(t.harder)}. PO-konform und zulässig; an diesen Stellen könnte der Hund anders abbiegen. Beim Abfahren ansehen.</div>` : ''}
       <details class="checks steps-box"><summary>Trailverlauf: ${t.steps.length} Schritte</summary><ol class="steps"></ol></details>
       <label class="check exam-check"><input type="checkbox"${t.checked ? ' checked' : ''}> geprüft (abgefahren)</label>
@@ -3116,7 +3264,8 @@ function renderExam() {
     card.querySelector('.exam-check input').onchange = e => { t.checked = e.target.checked; persistExam(); renderExam(); };
     const bRep = mk('Ersetzen', () => replaceTrail(i, bRep));
     if (t.imported) { bRep.disabled = true; bRep.title = 'Importierter Trail: bitte neu importieren'; }
-    card.querySelector('.actions').append(bRep, linkBtn('Startpunkt', pointLink(t.ll[0])), linkBtn('Endpunkt', pointLink(t.ll[t.ll.length - 1])));
+    const bDel = mk('Löschen', () => deleteTrail(i));
+    card.querySelector('.actions').append(bRep, bDel, linkBtn('Startpunkt', pointLink(t.ll[0])), linkBtn('Endpunkt', pointLink(t.ll[t.ll.length - 1])));
     cards.append(card);
   });
   host.append(cards);
