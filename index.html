@@ -2145,10 +2145,10 @@ const store = {
 };
 
 // Vereinsbezogene Angaben an einer Stelle (Grundlage für den späteren Mehrvereinsbetrieb, siehe docs/architektur)
-const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946], contact: '' };
+const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946], contact: 'Felix Schuck, Obere Steigstr. 14, 97276 Margetshöchheim' };
 $('#privacyWho').textContent = CLUB.name + (CLUB.contact ? ', Kontakt: ' + CLUB.contact : '');
 // Versionsnummer: jede Änderung zählt um 0.1 hoch (V1.0 … V1.9, dann V2.0 …); Änderungen stehen in CHANGELOG.md
-const APP_VERSION = '2.9';
+const APP_VERSION = '3.0';
 document.getElementById('appVersion').textContent = 'V' + APP_VERSION;
 const saved = store.get();
 function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }

@@ -2,6 +2,10 @@
 
 Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Die aktuelle Version steht in der App neben der Überschrift.
 
+## V3.0 – 27.10.2026
+
+- Kontaktadresse im Hinweis „Testversion · Datenschutz“ ergänzt (Verantwortlicher mit Anschrift).
+
 ## V2.9 – 27.10.2026
 
 Robustheit nach externem Review: Speichern, Dateiprüfung, Serverabfragen, ältere Kartendaten.
