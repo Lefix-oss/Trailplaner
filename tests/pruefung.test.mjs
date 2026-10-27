@@ -394,3 +394,24 @@ test('parseExam übernimmt den Hinweis am Übergang (link.note) und prüft ihn',
   assert.throws(() => Pruefung.parseExam(base({ x: 1 })), /beschädigt/);
   assert.throws(() => Pruefung.parseExam(base('x'.repeat(301))), /beschädigt/);
 });
+
+test('landQuery fragt Wald, Wiese, Wohngebiet und andere Flächen im Rechteck ab', () => {
+  const q = Pruefung.landQuery([49.6, 9.9, 49.7, 10]);
+  assert.match(q, /way\["landuse"~"\^\(residential\|forest\|meadow/);
+  assert.match(q, /relation\["natural"~/);
+  assert.match(q, /\(49\.600000,9\.900000,49\.700000,10\.000000\)/);
+  assert.match(q, /out geom;$/);
+});
+
+test('parseExam behält Geländeanteile und lehnt Werte außerhalb von 0–100 ab', () => {
+  const land = { wohn: 60, wald: 20, wiese: 10, anderes: 5, ohne: 5, note: 'Friedhof ca. 20 m' };
+  const exam = { format: 'trailplaner-pruefung', version: 2, savedAt: null,
+    places: [{ id: 'A', name: 'Musterdorf', center: { lat: 49.65, lon: 9.95 }, terrain: 'ort', radius: 1200 }], settings: {}, date: '2026-10-31',
+    trails: [{ level: 'MT-I', ll: [[49.65, 9.95], [49.651, 9.951]], length: 305, turns: 1, decisions: 1, crossings: 0, steps: [], startStreet: 'A', endStreet: 'B', checked: false, harder: '', place: 'A', land }],
+    names: { teams: { 'MT-I': [], 'MT-II': [], 'MT-III': [] }, vps: [] }, assign: [{ team: '', vp: '' }] };
+  assert.deepEqual(Pruefung.parseExam(Pruefung.serializeExam(exam)), exam);
+  const bad = JSON.parse(Pruefung.serializeExam(exam)); bad.trails[0].land.wald = 101;
+  assert.throws(() => Pruefung.parseExam(JSON.stringify(bad)), /beschädigt/);
+  const bad2 = JSON.parse(Pruefung.serializeExam(exam)); delete bad2.trails[0].land.ohne;
+  assert.throws(() => Pruefung.parseExam(JSON.stringify(bad2)), /beschädigt/);
+});

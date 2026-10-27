@@ -2,6 +2,16 @@
 
 Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Die aktuelle Version steht in der App neben der Überschrift.
 
+## V2.6 – 27.10.2026
+
+Gelände der Prüfungstrails besser an der PO prüfen: Wohngebiet, Wald, Wiese.
+
+- **Geländezeile auf der Trailkarte (Prüfungsansicht):** „Gelände laut Karte: 60 % Wohngebiet · 25 % Wiese/Feld/Park · 15 % anderes“. Grundlage sind die Flächen aus OpenStreetMap (Wohngebiet, Wald, Wiese, Feld, Park und andere), ausgewertet alle 5 m entlang der Strecke. Die kleinste Fläche gilt, ein Park im Wohngebiet zählt also als Park.
+- **Hinweis bei Gelände, das die PO nicht nennt** (ab 5 % der Strecke): zum Beispiel Gewerbegebiet, Friedhof, Sportplatz, Parkplatz, Schulgelände, mit Art und ungefährer Länge, dazu ein ⚠ in der zugeklappten Zeile. Nur ein Hinweis, kein Ausschluss: beim Abfahren ansehen und mit der Richterin klären.
+- Die Flächen werden getrennt vom Wegenetz geladen und zwischengespeichert. Die Trailplanung, das Wegenetz und der feste Auszug für Giebelstadt bleiben unverändert. Gelingt das Laden nicht (offline, Server überlastet), fehlt nur die Geländezeile; pro Seitenaufruf gibt es einen Versuch je Ort.
+- Die Anteile werden im Prüfungsstand mitgespeichert (Feld `land`), bei ersetzten, importierten und neu aufgebauten Trails automatisch nachgetragen.
+- **Bekannte Grenzen:** Straßen am Rand einer Fläche zählen noch zu ihr (15 m), außer bei „anderem“ Gelände. Wo OpenStreetMap keine Fläche kennt, steht „ohne Flächenangabe“. Nur die Prüfungsansicht, nicht die Trainingsansicht und nicht der Prüfungsbogen.
+
 ## V2.5 – 25.10.2026
 
 Kürzere Seitenleiste: Trailkarten und Namenslisten zum Auf- und Zuklappen.

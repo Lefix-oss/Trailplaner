@@ -536,3 +536,60 @@ test('transitPath: Zugang über die erste Abzweigung nur, wenn kein späterer Tr
   })))) : Infinity;
   assert.ok(r.dist === null || dmin > 1, `Weg berührt den späteren Trail (${Math.round(dmin)} m)`);
 });
+
+// ---------- Gelände entlang eines Trails ----------
+const sq = (lat0, lon0, lat1, lon1) => [lat0, lon0, lat0, lon1, lat1, lon1, lat1, lon0, lat0, lon0].reduce((a, v, i, s) => (i % 2 ? a : a.concat([{ lat: v, lon: s[i + 1] }])), []);
+const area = (id, tags, lat0, lon0, lat1, lon1) => ({ type: 'way', id, tags, geometry: sq(lat0, lon0, lat1, lon1) });
+const C0 = { lat: 49.65, lon: 9.95 };
+const line = (lat, lon0, lon1) => [[lat, lon0], [lat, lon1]];
+
+test('terrainShares: Anteile Wohngebiet, Wald und anderes entlang einer Linie', () => {
+  const land = Planner.buildLand({ elements: [
+    area(1, { landuse: 'residential' }, 49.650, 9.950, 49.652, 9.952),
+    area(2, { landuse: 'forest' }, 49.650, 9.952, 49.652, 9.954),
+    area(3, { landuse: 'industrial' }, 49.650, 9.954, 49.652, 9.956),
+  ] }, C0);
+  const s = Planner.terrainShares(land, line(49.6510, 9.9501, 9.9559).map(land.fromLatLon));
+  assert.ok(Math.abs(s.wohn - 1 / 3) < 0.06, `wohn ${s.wohn}`);
+  assert.ok(Math.abs(s.wald - 1 / 3) < 0.06, `wald ${s.wald}`);
+  assert.ok(Math.abs(s.anderes - 1 / 3) < 0.06, `anderes ${s.anderes}`);
+  assert.equal(s.ohne, 0);
+  assert.ok(s.other['Industriegebiet'] > 100);
+});
+
+test('terrainShares: der kleinste Treffer gilt (Park im Wohngebiet), unkartiertes Gebiet heißt „ohne“', () => {
+  const land = Planner.buildLand({ elements: [
+    area(1, { landuse: 'residential' }, 49.650, 9.950, 49.652, 9.952),
+    area(2, { leisure: 'park' }, 49.6505, 9.9505, 49.6510, 9.9510),
+  ] }, C0);
+  const s = Planner.terrainShares(land, line(49.6507, 9.9501, 9.9515).map(land.fromLatLon));
+  assert.ok(s.wiese > 0.25 && s.wiese < 0.5, `wiese ${s.wiese}`);
+  assert.ok(s.wohn > 0.5, `wohn ${s.wohn}`);
+  const weit = Planner.terrainShares(land, line(49.6600, 9.9501, 9.9515).map(land.fromLatLon));
+  assert.equal(weit.ohne, 1);
+});
+
+test('buildLand: Relation aus zwei Teilstücken ergibt einen Ring; nicht geschlossene Wege zählen nicht', () => {
+  const half = (lonA, lonB) => ({ type: 'way', geometry: [{ lat: 49.650, lon: lonA }, { lat: 49.650, lon: lonB }, { lat: 49.652, lon: lonB }, { lat: 49.652, lon: lonA }] });
+  const rel = { type: 'relation', tags: { landuse: 'forest' }, members: [
+    { role: 'outer', geometry: [{ lat: 49.650, lon: 9.950 }, { lat: 49.650, lon: 9.951 }, { lat: 49.650, lon: 9.952 }] },
+    { role: 'outer', geometry: [{ lat: 49.650, lon: 9.952 }, { lat: 49.652, lon: 9.952 }, { lat: 49.652, lon: 9.950 }, { lat: 49.650, lon: 9.950 }] },
+  ] };
+  const open = { type: 'way', tags: { landuse: 'meadow' }, geometry: half(9.950, 9.952).geometry };
+  const land = Planner.buildLand({ elements: [rel, open] }, C0);
+  assert.equal(land.count, 1);
+  assert.equal(land.classAt(land.fromLatLon([49.651, 9.951])).cls, 'wald');
+});
+
+test('terrainShares: Straße knapp neben einem Friedhof zählt nicht als Friedhof, Randstraße am Wohngebiet schon', () => {
+  const land = Planner.buildLand({ elements: [
+    area(1, { landuse: 'cemetery' }, 49.650, 9.950, 49.651, 9.952),
+    area(2, { landuse: 'residential' }, 49.652, 9.950, 49.653, 9.952),
+  ] }, C0);
+  const nebenFriedhof = Planner.terrainShares(land, line(49.65108, 9.9501, 9.9519).map(land.fromLatLon));   // ca. 9 m nördlich
+  assert.equal(nebenFriedhof.anderes, 0);
+  const amWohngebiet = Planner.terrainShares(land, line(49.65192, 9.9501, 9.9519).map(land.fromLatLon));   // ca. 9 m südlich
+  assert.ok(amWohngebiet.wohn > 0.95, `wohn ${amWohngebiet.wohn}`);
+  const imFriedhof = Planner.terrainShares(land, line(49.6505, 9.9501, 9.9519).map(land.fromLatLon));
+  assert.ok(imFriedhof.anderes > 0.95);
+});

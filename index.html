@@ -537,6 +537,109 @@ const Planner = (() => {
     return () => { a |= 0; a = (a + 0x6D2B79F5) | 0; let t = Math.imul(a ^ (a >>> 15), 1 | a); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; };
   }
 
+  // Außenränder eines Flächenelements: geschlossener Weg oder zu Ringen zusammengesetzte Teilstücke einer Relation
+  function elementRings(el, P) {
+    const out = [];
+    if (el.type === 'way' && el.geometry) out.push(el.geometry.map(g => P(g.lat, g.lon)));
+    if (el.type === 'relation' && el.members) {
+      let parts = el.members.filter(m => m.role !== 'inner' && m.geometry).map(m => m.geometry.map(g => P(g.lat, g.lon)));
+      while (parts.length) {
+        let ring = parts.shift(), grown = true;
+        while (grown && dist(ring[0], ring[ring.length - 1]) > 2) {
+          grown = false;
+          for (let i = 0; i < parts.length; i++) {
+            const q = parts[i], end = ring[ring.length - 1];
+            if (dist(end, q[0]) < 2) ring = ring.concat(q.slice(1));
+            else if (dist(end, q[q.length - 1]) < 2) ring = ring.concat(q.slice().reverse().slice(1));
+            else continue;
+            parts.splice(i, 1); grown = true; break;
+          }
+        }
+        out.push(ring);
+      }
+    }
+    return out;
+  }
+
+  // ---------- Gelände entlang eines Trails (Flächen aus OSM) ----------
+  // Die PO nennt Wohngebiet, Wald und Wiese. Alles andere (Gewerbe, Friedhof, Sportplatz …) wird nur als Hinweis gemeldet.
+  const LAND_USE = {
+    residential: ['wohn'], forest: ['wald'],
+    meadow: ['wiese'], grass: ['wiese'], farmland: ['wiese'], orchard: ['wiese'], vineyard: ['wiese'], village_green: ['wiese'], allotments: ['wiese'],
+    industrial: ['anderes', 'Industriegebiet'], commercial: ['anderes', 'Gewerbegebiet'], retail: ['anderes', 'Einzelhandel'],
+    railway: ['anderes', 'Bahngelände'], quarry: ['anderes', 'Steinbruch'], construction: ['anderes', 'Baustelle'],
+    brownfield: ['anderes', 'Brachfläche'], garages: ['anderes', 'Garagen'], military: ['anderes', 'Militärgelände'],
+    cemetery: ['anderes', 'Friedhof'], farmyard: ['anderes', 'Hofstelle'],
+  };
+  const LAND_NATURAL = { wood: ['wald'], scrub: ['wiese'], grassland: ['wiese'], heath: ['wiese'] };
+  const LAND_LEISURE = {
+    park: ['wiese'], garden: ['wiese'],
+    pitch: ['anderes', 'Sportplatz'], sports_centre: ['anderes', 'Sportanlage'], playground: ['anderes', 'Spielplatz'],
+    golf_course: ['anderes', 'Golfplatz'], stadium: ['anderes', 'Stadion'],
+  };
+  const LAND_AMENITY = { parking: ['anderes', 'Parkplatz'], school: ['anderes', 'Schulgelände'], kindergarten: ['anderes', 'Kindergarten'], hospital: ['anderes', 'Klinikgelände'] };
+  const LAND_TOL = 15;   // Straße am Rand einer Fläche zählt noch zu ihr (Flächen enden oft in der Straßenmitte)
+  const LAND_STEP = 5;
+  function landClass(t) {
+    return LAND_USE[t.landuse] || LAND_NATURAL[t.natural] || LAND_LEISURE[t.leisure] || LAND_AMENITY[t.amenity] || null;
+  }
+  // Die kleinste Fläche, die einen Punkt enthält, gilt (Park im Wohngebiet). fromLatLon([Breite, Länge]) liefert Ebenenpunkte für terrainShares.
+  function buildLand(osm, center) {
+    const kx = 111320 * Math.cos(center.lat * Math.PI / 180), ky = 110574;
+    const fromLatLon = ll => [(ll[1] - center.lon) * kx, (ll[0] - center.lat) * ky];
+    const P = (lat, lon) => fromLatLon([lat, lon]);
+    const polys = [];
+    for (const el of osm.elements || []) {
+      const cls = landClass(el.tags || {});
+      if (!cls) continue;
+      for (const ring of elementRings(el, P)) {
+        if (ring.length < 4 || dist(ring[0], ring[ring.length - 1]) > 2) continue;
+        const xs = ring.map(q => q[0]), ys = ring.map(q => q[1]);
+        let a = 0; for (let i = 0, j = ring.length - 1; i < ring.length; j = i++) a += ring[j][0] * ring[i][1] - ring[i][0] * ring[j][1];
+        polys.push({ ring, cls: cls[0], kind: cls[1] || '', area: Math.abs(a) / 2,
+          bbox: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)] });
+      }
+    }
+    const contains = (pg, p) => {
+      const r = pg.ring; let in_ = false;
+      for (let i = 0, j = r.length - 1; i < r.length; j = i++) {
+        if ((r[i][1] > p[1]) !== (r[j][1] > p[1]) && p[0] < (r[j][0] - r[i][0]) * (p[1] - r[i][1]) / (r[j][1] - r[i][1]) + r[i][0]) in_ = !in_;
+      }
+      return in_;
+    };
+    function classAt(p) {
+      let best = null;
+      for (const pg of polys) {
+        if (p[0] < pg.bbox[0] || p[0] > pg.bbox[2] || p[1] < pg.bbox[1] || p[1] > pg.bbox[3]) continue;
+        if (contains(pg, p) && (!best || pg.area < best.area)) best = pg;
+      }
+      if (best) return best;
+      let bd = LAND_TOL + 1e-9;
+      for (const pg of polys) {
+        if (pg.cls === 'anderes') continue;   // Randtoleranz nur für Wohngebiet, Wald, Wiese: eine Straße neben einem Friedhof liegt nicht im Friedhof
+        if (p[0] < pg.bbox[0] - LAND_TOL || p[0] > pg.bbox[2] + LAND_TOL || p[1] < pg.bbox[1] - LAND_TOL || p[1] > pg.bbox[3] + LAND_TOL) continue;
+        let d = Infinity; const r = pg.ring;
+        for (let i = 1; i < r.length; i++) d = Math.min(d, segPointDist(p, r[i - 1], r[i]));
+        if (d < bd || (d === bd && best && pg.area < best.area)) { bd = d; best = pg; }
+      }
+      return best;
+    }
+    return { count: polys.length, classAt, fromLatLon };
+  }
+  // Anteile am Trail (Punkte alle 5 m): { n, wohn, wald, wiese, anderes, ohne (Anteile 0–1), other: { Art: Meter } }
+  function terrainShares(land, pts) {
+    const cum = cumLens(pts), L = cum[cum.length - 1];
+    const r = { n: 0, wohn: 0, wald: 0, wiese: 0, anderes: 0, ohne: 0, other: {} };
+    for (let d = 0; d <= L; d += LAND_STEP) {
+      const pg = land.classAt(pointAt(pts, cum, d));
+      r.n++;
+      if (!pg) r.ohne++;
+      else { r[pg.cls]++; if (pg.cls === 'anderes') r.other[pg.kind] = (r.other[pg.kind] || 0) + LAND_STEP; }
+    }
+    for (const k of ['wohn', 'wald', 'wiese', 'anderes', 'ohne']) r[k] /= Math.max(1, r.n);
+    return r;
+  }
+
   // ---------- Graph aus OSM ----------
   function buildGraph(osm, center, radius) {
     const lat0 = center.lat, lon0 = center.lon;
@@ -570,25 +673,7 @@ const Planner = (() => {
     for (const el of osm.elements || []) {
       const t = el.tags || {};
       if (!SETTLEMENT.has(t.landuse)) continue;
-      if (el.type === 'way' && el.geometry) addRing(el.geometry.map(g => P(g.lat, g.lon)));
-      if (el.type === 'relation' && el.members) {
-        let parts = el.members.filter(m => m.role !== 'inner' && m.geometry).map(m => m.geometry.map(g => P(g.lat, g.lon)));
-        // Teilstücke zu Ringen zusammensetzen
-        while (parts.length) {
-          let ring = parts.shift(), grown = true;
-          while (grown && dist(ring[0], ring[ring.length - 1]) > 2) {
-            grown = false;
-            for (let i = 0; i < parts.length; i++) {
-              const q = parts[i], end = ring[ring.length - 1];
-              if (dist(end, q[0]) < 2) ring = ring.concat(q.slice(1));
-              else if (dist(end, q[q.length - 1]) < 2) ring = ring.concat(q.slice().reverse().slice(1));
-              else continue;
-              parts.splice(i, 1); grown = true; break;
-            }
-          }
-          addRing(ring);
-        }
-      }
+      elementRings(el, P).forEach(addRing);
     }
     function inSettlement(p) {
       for (const pg of polys) {
@@ -1719,7 +1804,7 @@ const Planner = (() => {
     if (s.blocked) return false;
     return true;
   }
-  return { LEVELS, buildGraph, prepare, setTerrain, pool, plans, alternatives, walkGraph, blockedEdges, walkPath, chain, replacement, reverseTrail, similar, snapEdge, validate, describe, endpointNames, toGPX, rng, trailPts, compatible, levelByLength, matchTrack, trackCandidate, orderFixed, transitPath };
+  return { LEVELS, buildGraph, buildLand, terrainShares, prepare, setTerrain, pool, plans, alternatives, walkGraph, blockedEdges, walkPath, chain, replacement, reverseTrail, similar, snapEdge, validate, describe, endpointNames, toGPX, rng, trailPts, compatible, levelByLength, matchTrack, trackCandidate, orderFixed, transitPath };
 })();
 if (typeof module !== 'undefined') module.exports = Planner;
 
@@ -1874,6 +1959,15 @@ const Pruefung = (() => {
     return `[out:json][timeout:60];(way["highway"](${bbox});way["landuse"~"^(residential|retail|commercial)$"](${bbox});relation["landuse"~"^(residential|retail|commercial)$"](${bbox});node["barrier"](${bbox}););out body geom;`;
   }
 
+  // Flächen für die Geländeanteile (getrennt vom Wegenetz, damit dessen Daten unverändert bleiben)
+  function landQuery(b) {
+    const bbox = b.map(v => v.toFixed(6)).join(',');
+    const sets = [['landuse', 'residential|forest|meadow|grass|farmland|orchard|vineyard|village_green|allotments|industrial|commercial|retail|railway|quarry|construction|brownfield|garages|military|cemetery|farmyard'],
+      ['natural', 'wood|scrub|grassland|heath'], ['leisure', 'park|garden|pitch|sports_centre|playground|golf_course|stadium'],
+      ['amenity', 'parking|school|kindergarten|hospital']];
+    return `[out:json][timeout:60];(${sets.map(([k, v]) => `way["${k}"~"^(${v})$"](${bbox});relation["${k}"~"^(${v})$"](${bbox});`).join('')});out geom;`;
+  }
+
   // ---------- GPX-Import ----------
   const GPX_LIMITS = { bytes: 1e6, files: 50, points: 5000 };
   // Kleiner eigener Leser: nur Breite und Länge der Trackpunkte (trkpt) und Routenpunkte (rtept) sowie der Name als Text
@@ -2007,6 +2101,8 @@ const Pruefung = (() => {
       if (t.name !== undefined && (typeof t.name !== 'string' || t.name.length > 80)) throw bad();
       if (t.file !== undefined && (typeof t.file !== 'string' || t.file.length > 120)) throw bad();
       if (t.issues !== undefined && !(Array.isArray(t.issues) && t.issues.length <= 20 && t.issues.every(x => typeof x === 'string' && x.length <= 300))) throw bad();
+      if (t.land !== undefined && !(t.land && typeof t.land === 'object' && ['wohn', 'wald', 'wiese', 'anderes', 'ohne'].every(k => num(t.land[k]) && t.land[k] >= 0 && t.land[k] <= 100)
+        && (t.land.note === undefined || (typeof t.land.note === 'string' && t.land.note.length <= 200)))) throw bad();
       if (!t.steps) t.steps = [];
       if (typeof t.checked !== 'boolean') t.checked = false;
       if (typeof t.harder !== 'string') t.harder = '';
@@ -2020,7 +2116,7 @@ const Pruefung = (() => {
     return ex;
   }
 
-  return { FORMAT, VERSION, LEVEL_KEYS, PLACE_IDS, parseNames, splitTeam, draw, setCell, balance, obstacle, shareText, placeOf, mergePlaces, replacePlaceTrails, osmKey, osmFresh, osmBBox, findExtract, overpassQuery, placeChoices, serializeExam, parseExam, GPX_LIMITS, parseGpx, placeFor, groupTracks, reverseName };
+  return { FORMAT, VERSION, LEVEL_KEYS, PLACE_IDS, parseNames, splitTeam, draw, setCell, balance, obstacle, shareText, placeOf, mergePlaces, replacePlaceTrails, osmKey, osmFresh, osmBBox, findExtract, overpassQuery, landQuery, placeChoices, serializeExam, parseExam, GPX_LIMITS, parseGpx, placeFor, groupTracks, reverseName };
 })();
 if (typeof module !== 'undefined') module.exports = Pruefung;
 </script>
@@ -2038,7 +2134,7 @@ const store = {
 const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946], contact: '' };
 $('#privacyWho').textContent = CLUB.name + (CLUB.contact ? ', Kontakt: ' + CLUB.contact : '');
 // Versionsnummer: jede Änderung zählt um 0.1 hoch (V1.0 … V1.9, dann V2.0 …); Änderungen stehen in CHANGELOG.md
-const APP_VERSION = '2.5';
+const APP_VERSION = '2.6';
 document.getElementById('appVersion').textContent = 'V' + APP_VERSION;
 const saved = store.get();
 function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }
@@ -2057,7 +2153,7 @@ const EMPTY_RESULTS = $('#results').innerHTML;   // „So geht's“-Hinweis für
 const state = {
   places: initialPlaces(), activePlace: saved.activePlace || 'A',
   teams: saved.teams || defaultTeams(),
-  graphs: new Map(), pools: null, plans: [], active: 0, seed: Date.now() % 100000, planTeams: null,
+  graphs: new Map(), lands: new Map(), pools: null, plans: [], active: 0, seed: Date.now() % 100000, planTeams: null,
   exam: null, examPools: null, examSeen: [],   // Prüfungsstand: eingefrorene Trails, Häkchen, Zuteilung
 };
 if (saved.startTime) $('#startTime').value = saved.startTime;
@@ -2379,8 +2475,8 @@ async function loadOSM(c, radius, refresh = false) {
   }
 }
 // Alle Server gleichzeitig fragen, die erste vollständige Antwort gewinnt; nach 65 s wird abgebrochen
-async function fetchOSM(c, radius) {
-  const q = Pruefung.overpassQuery(Pruefung.osmBBox(c, radius));
+const fetchOSM = (c, radius) => fetchOverpass(Pruefung.overpassQuery(Pruefung.osmBBox(c, radius)));
+async function fetchOverpass(q) {
   const ctls = OVERPASS.map(() => new AbortController());
   const timer = setTimeout(() => ctls.forEach(x => x.abort()), 65000);
   try {
@@ -2411,6 +2507,55 @@ async function graphFor(place, radius) {
     state.graphs.set(key, Planner.buildGraph(osm, place.center, radius));
   }
   return state.graphs.get(key);
+}
+// Geländeanteile (Wohngebiet, Wald, Wiese …) je Prüfungstrail. Die Flächen kommen getrennt vom Wegenetz und eigener Zwischenspeicher;
+// Fehlen sie (offline, Server überlastet), bleibt die Trailkarte ohne Geländezeile. Pro Ort nur ein Versuch je Seitenaufruf.
+async function loadLand(c, radius) {
+  const key = 'land:' + Pruefung.osmKey(c, radius), cached = await osmCache.get(key);
+  if (cached && Pruefung.osmFresh(cached.savedAt, Date.now())) return cached.data;
+  try {
+    const data = await fetchOverpass(Pruefung.landQuery(Pruefung.osmBBox(c, radius)));
+    osmCache.set(key, { savedAt: Date.now(), data });
+    return data;
+  } catch (e) { if (cached) return cached.data; throw e; }
+}
+function landSummary(L, ll) {
+  const s = Planner.terrainShares(L, ll.map(L.fromLatLon)), pc = v => Math.round(v * 100);
+  const other = Object.entries(s.other).filter(([, m]) => m >= 10).sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k, m]) => `${k} ca. ${Math.round(m / 5) * 5} m`);
+  const land = { wohn: pc(s.wohn), wald: pc(s.wald), wiese: pc(s.wiese), anderes: pc(s.anderes), ohne: pc(s.ohne) };
+  if (other.length) land.note = other.join(', ').slice(0, 200);
+  return land;
+}
+const landTried = new Set(); let landBusy = false;
+async function ensureLand() {
+  const ex = state.exam;
+  if (landBusy || !ex) return;
+  const todo = ex.trails.filter(t => !t.land && t.place && ex.places.some(p => p.id === t.place && p.center));
+  if (!todo.length) return;
+  landBusy = true;
+  try {
+    let changed = false;
+    for (const pid of new Set(todo.map(t => t.place))) {
+      const place = ex.places.find(p => p.id === pid), key = Pruefung.osmKey(place.center, place.radius);
+      if (!state.lands.has(key)) {
+        if (landTried.has(key)) continue;
+        landTried.add(key);
+        try { state.lands.set(key, Planner.buildLand(await loadLand(place.center, place.radius), place.center)); } catch { continue; }
+      }
+      const L = state.lands.get(key);
+      if (!L.count) continue;   // keine Flächen kartiert: lieber nichts anzeigen als lauter „ohne Angabe“
+      for (const t of todo) if (t.place === pid && !t.land) { t.land = landSummary(L, t.ll); changed = true; }
+    }
+    if (changed && state.exam === ex) { persistExam(); if (planMode === 'pruefung') renderExam(); }
+  } finally { landBusy = false; }
+}
+// Geländezeile der Trailkarte; Hinweis, wenn Flächen vorkommen, die die PO nicht nennt
+const landWarn = t => !!(t.land && t.land.anderes >= 5);
+function landHtml(t) {
+  const l = t.land; if (!l) return '';
+  const parts = [[l.wohn, 'Wohngebiet'], [l.wald, 'Wald'], [l.wiese, 'Wiese/Feld/Park'], [l.anderes, 'anderes'], [l.ohne, 'ohne Flächenangabe']].filter(([v]) => v >= 1).map(([v, n]) => `<b>${v} %</b> ${n}`);
+  return `<div class="streets">Gelände laut Karte: ${parts.join(' · ') || 'keine Angabe'}</div>` +
+    (landWarn(t) ? `<div class="warnbox"><b>Gelände außerhalb der PO-Liste</b> (Wohngebiet, Wald, Wiese): ${esc(l.note || `${l.anderes} % der Strecke`)}. Beim Abfahren ansehen und mit der Richterin klären.</div>` : '');
 }
 // Plant die Teams der genannten Orte, Ort für Ort. Bereits geplante Trails (auch anderer Orte und fixedLLs)
 // sind Hindernisse, weil sich die Suchkreise benachbarter Orte überlappen können.
@@ -3339,7 +3484,7 @@ function renderExam() {
   ex.trails.forEach((t, i) => {
     const lv = Planner.LEVELS[t.level];
     const key = t.ll[0].join(), isOpen = examOpen.has(key);
-    const warn = !!(t.harder || (t.issues || []).length || (t.link && (t.link.gap || t.link.note)));
+    const warn = !!(t.harder || (t.issues || []).length || (t.link && (t.link.gap || t.link.note)) || landWarn(t));
     const card = document.createElement('article'); card.className = 'card' + (t.checked ? ' checked' : '') + (isOpen ? '' : ' collapsed');
     card.innerHTML = `
       <div class="card-head card-toggle" role="button" tabindex="0" aria-expanded="${isOpen}"><span class="dot num" style="background:${COLORS[i % COLORS.length]}">${i + 1}</span>
@@ -3350,6 +3495,7 @@ function renderExam() {
         <span class="chev" aria-hidden="true">${isOpen ? '▾' : '▸'}</span></div>
       <div class="stats"><span><b>${+t.length}</b> m</span><span><b>${+t.turns}</b> Richtungswechsel</span><span><b>${+t.decisions - +t.turns}</b> zusätzliche Entscheidungsstelle${t.decisions - t.turns === 1 ? '' : 'n'}</span><span><b>${+t.crossings}</b> Kreuzung${t.crossings === 1 ? '' : 'en'}</span><span>Suchzeit <b>${lv.searchMin}</b> min</span></div>
       <div class="streets"></div>
+      ${landHtml(t)}
       ${t.link === undefined ? '' : `<div class="streets">${t.link === null ? 'Beginn der Kette' : t.link.pending ? `<b style="color:var(--warn)">Noch nicht in die Kette eingeordnet:</b> ${+t.link.dist} m Luftlinie vom letzten Trail dieses Orts. „Kette neu aufbauen“ drücken.` : t.link.gap ? `<b style="color:var(--warn)">Lücke:</b> neuer Abschnitt, ${+t.link.dist} m Luftlinie vom vorigen Ziel` : `Weg vom vorigen Ziel: <b>${+t.link.dist} m</b>`}${t.link && t.link.note ? ` <span style="color:var(--warn)">· ${esc(t.link.note)}</span>` : ''}</div>`}
       ${t.imported ? `<div class="warnbox"><b>Importiert${t.name ? ': ' + esc(t.name) : ''}.</b> Die Strecke ist unverändert aus der GPX-Datei. Die Wegbeschreibung ist aus dem Wegenetz abgeleitet und ungefähr.${(t.issues || []).length ? '<ul>' + t.issues.map(x => `<li>${esc(x)}</li>`).join('') + '</ul>' : ''}</div>` : t.harder ? `<div class="warnbox"><b>Hinweis:</b> ${esc(t.harder)}. PO-konform und zulässig; an diesen Stellen könnte der Hund anders abbiegen. Beim Abfahren ansehen.</div>` : ''}
       <details class="checks steps-box"><summary>Trailverlauf: ${t.steps.length} Schritte</summary><ol class="steps"></ol></details>
@@ -3379,6 +3525,7 @@ function renderExam() {
   host.append(cards);
   renderAssign(host);
   drawExam();
+  ensureLand();
 }
 // Prüfungstag: Namen eintragen, zuwürfeln oder von Hand zuteilen (Teams nur innerhalb ihrer Stufe)
 let namesOpen = null;   // Aufklappblock der Namenslisten: null = automatisch (offen, solange leer)
