@@ -32,6 +32,12 @@ function checkStar(plan, p, minDist, r = 50) {
     // ab Startkreis + Mindestabstand darf kein Punkt eines Trails näher als minDist an einem anderen liegen (am Kreisrand bleibt ein schmaler Übergang)
     const a = dense(plan[i].v.pts).filter(x => d(x, p) > r + minDist), b = plan[j].v.pts;
     assert.ok(a.every(x => lineDist(x, b) >= minDist - 2), `Trail ${i + 1} und ${j + 1} halten außerhalb des Nahbereichs Abstand`);
+    // im Startkreis (V3.9.1): kein Trail läuft über den Start eines anderen; getrennte Wege (gemeinsamer Start: ab 12 m)
+    const si = plan[i].v.pts[0], sj = plan[j].v.pts[0], same = d(si, sj) < 10;
+    const inner = (c, own, other) => dense(c.v.pts).filter(x => d(x, p) <= r + 8 && d(x, own) > (same ? 12 : 6) && (!same || d(x, other) > 12));
+    const A = inner(plan[i], si, sj), B = inner(plan[j], sj, si);
+    if (!same) assert.ok(A.every(x => d(x, sj) >= 9) && B.every(x => d(x, si) >= 9), `Trail ${i + 1}/${j + 1}: läuft am Start des anderen vorbei`);
+    if (A.length > 1 && B.length > 1) assert.ok(A.every(x => lineDist(x, B) >= 7), `Trail ${i + 1}/${j + 1}: gemeinsamer Weg im Startkreis`);
   }
 }
 

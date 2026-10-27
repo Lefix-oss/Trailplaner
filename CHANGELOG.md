@@ -1,6 +1,10 @@
 # Changelog – Trailplaner HSV Giebelstadt
 
-Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Die aktuelle Version steht in der App neben der Überschrift.
+Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Ab V3.9 zählen kleinere Änderungen als Unternummer weiter (V3.9.1, V3.9.2 …). Die aktuelle Version steht in der App neben der Überschrift.
+
+## V3.9.1 – 27.10.2026
+
+- **Stern: keine Überschneidung mehr im Startkreis.** Trails dürfen nah beieinander oder am selben Punkt starten, aber kein Trail läuft über den Startpunkt eines anderen (mind. 10 m Abstand) oder über dasselbe Wegstück (mind. 8 m Abstand). Bei gemeinsamem Startpunkt (Starts weniger als 10 m auseinander) müssen die Wege ab 12 m getrennt sein. Bisher durften sich Trails im 50-m-Startkreis beliebig nahe kommen; dadurch konnten zwei Trails dieselbe Straße in entgegengesetzter Richtung laufen (gemeldet aus dem Gewerbegebiet Heuchelhof-Rottenbauer). Außerhalb des Startkreises gilt wie bisher der volle Mindestabstand.
 
 ## V3.9 – 27.10.2026
 

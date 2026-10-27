@@ -1429,7 +1429,20 @@ const Planner = (() => {
   }
   function starCompatible(a, b, minDist) {
     const line = t => { const xs = t.map(q => q[0]), ys = t.map(q => q[1]); return { segSet: new Set(), nodeSet: new Set(), bbox: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], v: { pts: t } }; };
-    return compatible(line(a.star.tail), line(b.star.tail), minDist);
+    return starInnerOk(a, b) && compatible(line(a.star.tail), line(b.star.tail), minDist);
+  }
+  // Im Startkreis (V3.9.1): Trails dürfen nah beieinander oder am selben Punkt starten, aber kein Trail läuft über die Strecke
+  // oder den Startpunkt eines anderen. Gemeinsamer Start (< STAR_SAME m): ab STAR_SAME + 2 m vom Start getrennte Wege.
+  const STAR_SAME = 10, STAR_PASS = 10, STAR_APART = 8, STAR_OWN = 6;
+  const STAR_INNER = new WeakMap();
+  const starInner = c => { let q = STAR_INNER.get(c); if (!q) { q = densify(c.v.pts, 2).filter(x => dist(x, c.star.p) <= c.star.r + 8); STAR_INNER.set(c, q); } return q; };
+  function starInnerOk(a, b) {
+    const sa = a.v.pts[0], sb = b.v.pts[0], same = dist(sa, sb) < STAR_SAME;
+    const part = (c, own, other) => starInner(c).filter(x => dist(x, own) > (same ? STAR_SAME + 2 : STAR_OWN) && (!same || dist(x, other) > STAR_SAME + 2));
+    const A = part(a, sa, sb), B = part(b, sb, sa);
+    if (!same && (A.some(x => dist(x, sb) < STAR_PASS) || B.some(x => dist(x, sa) < STAR_PASS))) return false;   // läuft am Start des anderen vorbei
+    for (const x of A) for (const y of B) if (dist(x, y) < STAR_APART) return false;   // gleiches Wegstück oder Kreuzung im Startkreis
+    return true;
   }
   const angleOf = (p, q) => Math.atan2(q[1] - p[1], q[0] - p[0]);
   const angleGap = (x, y) => { const d = Math.abs(x - y) % (2 * Math.PI); return d > Math.PI ? 2 * Math.PI - d : d; };
@@ -2548,7 +2561,7 @@ const store = {
 const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946], contact: 'Felix Schuck, Obere Steigstr. 14, 97276 Margetshöchheim' };
 $('#privacyWho').textContent = CLUB.name + (CLUB.contact ? ', Kontakt: ' + CLUB.contact : '');
 // Versionsnummer: jede Änderung zählt um 0.1 hoch (V1.0 … V1.9, dann V2.0 …); Änderungen stehen in CHANGELOG.md
-const APP_VERSION = '3.9';
+const APP_VERSION = '3.9.1';
 document.getElementById('appVersion').textContent = 'V' + APP_VERSION;
 const saved = store.get();
 function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }
