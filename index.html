@@ -362,6 +362,7 @@ details.privacy p { margin: 6px 0 0; }
                 <label class="check" for="allowPaths"><input id="allowPaths" type="checkbox" checked> Fuß- und Feldwege erlauben (auf der Straßenkarte oft nicht zu sehen)</label>
         <label class="check" for="avoidLoops"><input id="avoidLoops" type="checkbox" checked> Trails vermeiden, die auf sich zurücklaufen</label>
         <label class="check" for="strictTurns"><input id="strictTurns" type="checkbox"> Streng: nur Trails ohne zusätzliche Entscheidungsstellen (findet oft nur Trails am Ortsrand oder auf dem Feld)</label>
+        <label class="check" for="starMode" id="starRow"><input id="starMode" type="checkbox"> Sternförmig: alle Trails starten an einem gemeinsamen Punkt (bevorzugt ein Parkplatz, höchstens 50 m entfernt) und laufen in verschiedene Richtungen. Jeder Eintrag unter „Teams“ ist dann ein Trail, den auch mehrere Hunde laufen können.</label>
         <div><label class="lbl" for="minDist">Abstand zwischen Trails</label>
           <select id="minDist"><option value="20">mind. 20 m</option><option value="30" selected>mind. 30 m</option><option value="50">mind. 50 m</option><option value="80">mind. 80 m</option></select></div>
       </div>
@@ -699,10 +700,13 @@ const Planner = (() => {
       return false;
     }
 
+    const parkPts = [];
     for (const el of osm.elements || []) {
       if (el.type !== 'way' || !el.geometry || !el.nodes || el.nodes.length !== el.geometry.length) continue;
       const t = el.tags || {};
       const pts = el.geometry.map(g => P(g.lat, g.lon));
+      // Parkplätze (Fahrgassen bzw. Parkplatzflächen) als mögliche Startpunkte für die Sternplanung
+      if (t.service === 'parking_aisle' || t.amenity === 'parking') parkPts.push([pts.reduce((s, q) => s + q[0], 0) / pts.length, pts.reduce((s, q) => s + q[1], 0) / pts.length]);
       if (isDrivable(t)) {
         const name = t.name || t.ref || TYPE_NAMES[t.highway] || 'Straße';
         for (let i = 0; i + 1 < pts.length; i++) drive.push({ a: pts[i], b: pts[i + 1], name });
@@ -804,7 +808,13 @@ const Planner = (() => {
       for (const wi of nb.values()) if (CLASS_RANK[ways[wi].cls] > CLASS_RANK[worst]) worst = ways[wi].cls;
       if (worst !== 'quiet') nodeCls.set(n, worst);
     }
-    return { segs, segAt, adj, ways, nodeCls, roundaboutNodes, settlementAreas: polys.length, inSettlement, barriers: blockedNodes.size, terrain: 'ort', avoidLoops: true, deg: n => (adj.get(n) ? Math.max(adj.get(n).size, branchAdj.has(n) ? branchAdj.get(n).size : 0) : 0), walkDeg: n => (adj.get(n) ? adj.get(n).size : 0), nearestDrive, toLatLon, fromLatLon: ll => P(ll[0], ll[1]), center, radius };
+    // Fahrgassen eines Parkplatzes zu einem Punkt zusammenfassen (Mitte aller Gassen im Umkreis von 80 m)
+    const parkings = [];
+    for (const q of parkPts) {
+      const c = parkings.find(k => dist(k.p, q) <= 80);
+      if (c) { c.n++; c.p = [c.p[0] + (q[0] - c.p[0]) / c.n, c.p[1] + (q[1] - c.p[1]) / c.n]; } else parkings.push({ p: q, n: 1 });
+    }
+    return { segs, segAt, adj, ways, nodeCls, roundaboutNodes, parkings: parkings.map(k => k.p).filter(inside), settlementAreas: polys.length, inSettlement, barriers: blockedNodes.size, terrain: 'ort', avoidLoops: true, deg: n => (adj.get(n) ? Math.max(adj.get(n).size, branchAdj.has(n) ? branchAdj.get(n).size : 0) : 0), walkDeg: n => (adj.get(n) ? adj.get(n).size : 0), nearestDrive, toLatLon, fromLatLon: ll => P(ll[0], ll[1]), center, radius };
   }
 
   // ---------- Hilfen für orientierte Segmente ----------
@@ -847,7 +857,8 @@ const Planner = (() => {
 
   // ---------- Einen Trail auswürfeln ----------
   // caps: { maxTurns, maxDecisions, noStraight } – Obergrenzen für diesen Suchlauf
-  function walk(G, lvl, R, fail, caps, startList = null) {
+  // near: { p, r } – Start höchstens r Meter von p (Sternplanung)
+  function walk(G, lvl, R, fail, caps, startList = null, near = null) {
     const allowed = s => segOk(G, lvl, s);
     const starts = startList || G._starts[lvl.key];
     if (!starts.length) { fail('keine passenden Wege'); return null; }
@@ -858,7 +869,13 @@ const Planner = (() => {
     for (const s of starts) { pick -= s.len; if (pick <= 0) { s0 = s; break; } }
     const fwd = R() < 0.5;
     const o0 = oriented(s0, fwd);
-    const off = Math.min(s0.len * (0.15 + 0.5 * R()), s0.len - MIN_DECISION_GAP);
+    let off;
+    if (near) {
+      const ok = [];
+      for (let d = 10; d <= s0.len - MIN_DECISION_GAP; d += 5) if (dist(pointAt(o0.pts, o0.cum, d), near.p) <= near.r) ok.push(d);   // nicht direkt auf der Kreuzung starten
+      if (!ok.length) { fail('Start zu weit vom Startpunkt'); return null; }
+      off = ok[Math.floor(R() * ok.length)];
+    } else off = Math.min(s0.len * (0.15 + 0.5 * R()), s0.len - MIN_DECISION_GAP);
     if (off < 0) { fail('Startweg zu kurz'); return null; }
     let acc = s0.len - off;
     if (acc >= target) { fail('Startweg zu lang ohne Abzweig'); return null; }
@@ -1236,12 +1253,17 @@ const Planner = (() => {
       tr.mode = mode;
       const v = validate(G, tr);
       if (!v.ok) { for (const c of v.checks) if (!c.ok) fail(c.label); return; }
+      let tail = null;
+      if (opts.near) {
+        tail = starTail(v.pts, opts.near.p);
+        if (!tail) { fail('läuft zum Startbereich zurück oder verlässt ihn nicht'); return; }
+      }
       const segSet = new Set(tr.legs.map(l => l.seg));
       // Dubletten vermeiden
       let similar = false;
       for (const c of out) {
         let inter = 0; for (const s of segSet) if (c.segSet.has(s)) inter++;
-        if (inter / Math.min(segSet.size, c.segSet.size) > 0.6) { similar = true; break; }
+        if (inter / Math.min(segSet.size, c.segSet.size) > (opts.near ? 0.75 : 0.6)) { similar = true; break; }   // Stern: gemeinsamer Anfang ist normal
       }
       if (similar) return;
       const nodeSet = new Set();
@@ -1253,23 +1275,25 @@ const Planner = (() => {
         + Math.min(1, dist(v.pts[0], v.pts[v.pts.length - 1]) / lvl.length)
         - v.pickup.d / 60 + R() * 0.3;
       if (v.targetOk) exactFound++;
-      out.push({
+      const c = {
         id: levelKey + '#' + out.length, tr, v, segSet, nodeSet, samples: smp,
         bbox: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], score,
-      });
+      };
+      if (tail) c.star = { p: opts.near.p, tail };
+      out.push(c);
     };
     // Durchgang 1: Zufallssuche nach idealen Trails; Durchgang 2 (falls nötig): auch mit zusätzlichen Entscheidungsstellen
     for (let t = 0; t < maxTries && out.length < want; t++) {
       const pass2 = !G.strict && t >= maxTries / 2 && exactFound < want / 3;
       if (t >= maxTries / 2 && !pass2) break;
-      const tr = walk(G, lvl, R, fail, pass2 ? looseCaps : exactCaps, opts.starts || null);
+      const tr = walk(G, lvl, R, fail, pass2 ? looseCaps : exactCaps, opts.starts || null, opts.near || null);
       if (tr) consider(tr);
     }
     // Seltene Trails findet der Zufall kaum: dann systematisch alle Abzweig-Kombinationen durchgehen
     for (const caps of G.strict ? [exactCaps] : [exactCaps, looseCaps]) {
       if (out.length >= want || (caps === looseCaps && exactFound >= want / 3)) break;
       const budget = { steps: opts.searchSteps || 250000 };
-      for (const tr of systematic(G, lvl, caps, R, budget, opts.starts || null)) { consider(tr); if (out.length >= want) break; }
+      for (const tr of systematic(G, lvl, caps, R, budget, opts.starts || null, opts.near || null)) { consider(tr); if (out.length >= want) break; }
     }
     out.sort((a, b) => a.v.excess - b.v.excess || b.score - a.score);
     return { list: out, reasons, exactFound };
@@ -1284,10 +1308,15 @@ const Planner = (() => {
   }
 
   // Tiefensuche über alle Startpunkte (gemischt) und alle erlaubten Abzweige innerhalb der Grenzen
-  function* systematic(G, lvl, caps, R, budget, startList = null) {
+  function* systematic(G, lvl, caps, R, budget, startList = null, near = null) {
     const target = lvl.length;
     const starts = [];
     for (const s of startList || G._starts[lvl.key]) for (const fwd of [true, false]) {
+      if (near) {   // Sternplanung: nur Startpunkte nahe am gemeinsamen Startpunkt, dafür feiner
+        const o = oriented(s, fwd);
+        for (let r = MIN_DECISION_GAP + 5; r <= Math.min(s.len - 10, target - 1); r += 10) if (dist(pointAt(o.pts, o.cum, s.len - r), near.p) <= near.r) starts.push({ s, fwd, off: s.len - r });
+        continue;
+      }
       for (let r = MIN_DECISION_GAP + 5; r <= Math.min(s.len - 10, target - 1); r += 25) starts.push({ s, fwd, off: s.len - r });
     }
     for (let i = starts.length - 1; i > 0; i--) { const j = Math.floor(R() * (i + 1)); [starts[i], starts[j]] = [starts[j], starts[i]]; }
@@ -1366,7 +1395,105 @@ const Planner = (() => {
   // Alternativen für ein Team, passend zu den übrigen Trails im Plan
   function alternatives(plan, ti, pools, teams, minDist) {
     const others = plan.filter((_, i) => i !== ti);
-    return pools[teams[ti].level].list.filter(c => c !== plan[ti] && !others.includes(c) && others.every(o => compatible(c, o, minDist)));
+    return pools[teams[ti].level].list.filter(c => c !== plan[ti] && !others.includes(c) && others.every(o => fits(c, o, minDist)));
+  }
+  // Zwei Trails eines Sterns (gleicher Startpunkt) dürfen sich im Startbereich nahe kommen, sonst gilt der normale Abstand
+  function fits(a, b, minDist) {
+    return a.star && b.star && dist(a.star.p, b.star.p) < 1 ? starCompatible(a, b, minDist) : compatible(a, b, minDist);
+  }
+
+  // ---------- Sternplanung (Training) ----------
+  // Alle Trails starten höchstens STAR_START Meter vom gemeinsamen Startpunkt (Parkplatz oder Kreuzung). Im Nahbereich
+  // (STAR_ZONE, etwas größer, damit auch fünf und mehr Trails Platz finden) dürfen sie sich nahe kommen; wer ihn verlassen hat, kommt nicht zurück.
+  const STAR_START = 50, STAR_ZONE = 80, STAR_CENTERS = 20;
+  // Teil des Trails nach dem Startbereich (Stützpunkte alle 8 m) oder null, wenn er zu weit weg beginnt, nicht hinausführt oder zurückkehrt
+  function starTail(pts, p) {
+    if (dist(pts[0], p) > STAR_START) return null;
+    const smp = samples(pts);
+    const k = smp.findIndex(q => dist(q, p) > STAR_ZONE);
+    if (k < 0 || smp.length - k < 2) return null;
+    for (let i = k; i < smp.length; i++) if (dist(smp[i], p) <= STAR_ZONE) return null;
+    // ab dem Austritt die echten Linienpunkte (Stützpunkte würden Ecken abschneiden)
+    const cum = cumLens(pts), dk = k * SAMPLE_STEP;
+    return [smp[k], ...pts.filter((_, i) => cum[i] > dk)];
+  }
+  function starCompatible(a, b, minDist) {
+    const line = t => { const xs = t.map(q => q[0]), ys = t.map(q => q[1]); return { segSet: new Set(), nodeSet: new Set(), bbox: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], v: { pts: t } }; };
+    return compatible(line(a.star.tail), line(b.star.tail), minDist);
+  }
+  const angleOf = (p, q) => Math.atan2(q[1] - p[1], q[0] - p[0]);
+  const angleGap = (x, y) => { const d = Math.abs(x - y) % (2 * Math.PI); return d > Math.PI ? 2 * Math.PI - d : d; };
+  // Richtungen eines Trails vom Startpunkt aus: Ausgang aus dem Startbereich und Ziel
+  const starDirs = c => [angleOf(c.star.p, c.star.tail[0]), angleOf(c.star.p, c.v.pts[c.v.pts.length - 1])];
+  // Kleinster Richtungsabstand (Mittel aus Ausgang und Ziel) zwischen c und den schon gewählten Trails
+  function starSpread(c, chosen) {
+    const [e, z] = starDirs(c);
+    let m = Math.PI;
+    for (const o of chosen) { const [e2, z2] = starDirs(o); m = Math.min(m, (angleGap(e, e2) + angleGap(z, z2)) / 2); }
+    return m;
+  }
+  // Mögliche Startpunkte: zuerst Parkplätze im Suchgebiet, danach Kreuzungen (ab drei Wegen) im inneren Teil des Kreises
+  function starCenters(G, R) {
+    const shuffle = a => { for (let i = a.length - 1; i > 0; i--) { const j = Math.floor(R() * (i + 1)); [a[i], a[j]] = [a[j], a[i]]; } return a; };
+    const inner = q => Math.hypot(q[0], q[1]) <= Math.max(100, G.radius - 150);
+    const parks = shuffle((G.parkings || []).filter(inner)).slice(0, STAR_CENTERS).map(p => ({ p, parking: true }));
+    const nodes = [];
+    for (const s of G.segs) for (const n of [s.a, s.b]) if (G.walkDeg(n) >= 3) nodes.push(n === s.a ? s.pts[0] : s.pts[s.pts.length - 1]);
+    const uniq = [...new Map(nodes.filter(inner).map(q => [q[0].toFixed(1) + ',' + q[1].toFixed(1), q])).values()];
+    return parks.concat(shuffle(uniq).slice(0, STAR_CENTERS).map(p => ({ p, parking: false })));
+  }
+  // Wählt aus den Vorräten einen Satz (ein Trail je Eintrag), der zueinander passt und möglichst weit gefächert ist
+  function starPick(teams, pools, R, minDist) {
+    let best = null;
+    for (let attempt = 0; attempt < 150; attempt++) {
+      const order = teams.map((_, i) => i);
+      if (attempt % 2) order.sort(() => R() - 0.5); else order.sort((x, y) => LEVELS[teams[y].level].length - LEVELS[teams[x].level].length);
+      const chosen = new Array(teams.length), list = [];
+      let ok = true;
+      for (const ti of order) {
+        const cands = pools[teams[ti].level].list.filter(c => !list.includes(c) && list.every(o => starCompatible(c, o, minDist)));
+        if (!cands.length) { ok = false; break; }
+        // erster Trail reihum aus dem ganzen Vorrat, danach einer der drei am weitesten abgefächerten
+        const rated = cands.map(c => ({ c, r: starSpread(c, list) - c.v.excess * 0.25 + R() * 0.15 })).sort((x, y) => y.r - x.r);
+        const pick = list.length ? rated[Math.floor(R() * Math.min(3, rated.length))].c : cands[attempt % cands.length];
+        chosen[ti] = pick; list.push(pick);
+      }
+      if (!ok) continue;
+      let spread = Math.PI;
+      list.forEach((c, i) => { spread = Math.min(spread, starSpread(c, list.filter((_, k) => k !== i))); });
+      const score = spread - list.reduce((a, c) => a + c.v.excess, 0) * 0.25;   // zusätzliche Entscheidungsstellen sind ein Nachteil, Fächerung der Vorteil
+      if (!best || score > best.score) best = { plan: chosen, score, spread };
+    }
+    return best;
+  }
+  function star(G, a, R, obstacles, progress) {
+    const centers = starCenters(G, R);
+    const t0 = Date.now(), budget = a.ms || 10000;   // mit Ergebnis nach 10 s aufhören, ohne spätestens nach 20 s
+    let best = null, pools = {}, lastPools = {}, tried = 0;
+    for (let k = 0; k < centers.length; k++) {
+      const ctr = centers[k];
+      if (Date.now() - t0 > (best ? budget : 2 * budget)) break;
+      if (best && best.center.parking && !ctr.parking) break;   // ein Stern am Parkplatz geht vor
+      const nPark = centers.filter(x => x.parking).length;
+      progress(`${a.label || ''}${ctr.parking ? `Prüfe Parkplatz ${k + 1} von ${nPark}` : `Kein Parkplatz passt, prüfe Kreuzung ${k + 1 - nPark} von ${centers.length - nPark}`} …`);
+      const near = { p: ctr.p, r: STAR_START };
+      const p = {};
+      for (const lv of a.levels) {
+        const starts = G.segs.filter(s => segOk(G, LEVELS[lv], s) && s.a !== s.b && s.len >= MIN_DECISION_GAP + 5 && s.inside >= TERRAIN[G.terrain || 'ort'] &&
+          s.pts.some((q, i) => i > 0 && segPointDist(ctr.p, s.pts[i - 1], q) <= STAR_START));
+        const pl = pool(G, lv, R, { want: 30, maxTries: 4000, mode: 'training', starts, near, searchSteps: 150000 });
+        if (a.pid) pl.list.forEach(c => { c.place = a.pid; c.id = a.pid + ':s' + k + ':' + c.id; });
+        pl.list = pl.list.filter(c => obstacles.every(o => compatible(c, o, a.minDist)));
+        p[lv] = pl;
+      }
+      lastPools = p; tried++;
+      if (a.levels.some(lv => !p[lv].list.length)) continue;
+      const pick = starPick(a.teams, p, R, a.minDist);
+      if (pick && (!best || pick.score > best.score)) { best = { ...pick, center: ctr }; pools = p; }
+    }
+    if (!best) return { pools: lastPools, plans: { plans: [], failTeam: null }, star: { centers: tried, found: false } };
+    for (const lv of Object.keys(pools)) pools[lv].list.forEach(c => { c.star.parking = best.center.parking; });
+    return { pools, plans: { plans: [best.plan], failTeam: null }, star: { p: best.center.p, parking: best.center.parking, centers: tried, found: true } };
   }
 
   function toGPX(G, cand, name) {
@@ -1813,6 +1940,7 @@ const Planner = (() => {
   function planPlace(G, a, progress = () => {}) {
     setTerrain(G, a.terrain, a.allowPaths, a.avoidLoops, a.strict);
     const R = rng(a.seed), obstacles = a.obstacles || [], pools = {};
+    if (a.star && a.mode === 'training' && !a.poolsOnly) return star(G, a, R, obstacles, progress);
     for (const lv of a.levels) {
       progress(`${a.label || ''}Würfle ${lv}-Trails und prüfe sie gegen die PO …`);
       const p = pool(G, lv, R, { want: 45, maxTries: 10000, mode: a.mode });
@@ -2197,7 +2325,7 @@ const store = {
 const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946], contact: 'Felix Schuck, Obere Steigstr. 14, 97276 Margetshöchheim' };
 $('#privacyWho').textContent = CLUB.name + (CLUB.contact ? ', Kontakt: ' + CLUB.contact : '');
 // Versionsnummer: jede Änderung zählt um 0.1 hoch (V1.0 … V1.9, dann V2.0 …); Änderungen stehen in CHANGELOG.md
-const APP_VERSION = '3.4';
+const APP_VERSION = '3.5';
 document.getElementById('appVersion').textContent = 'V' + APP_VERSION;
 const saved = store.get();
 function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }
@@ -2229,12 +2357,14 @@ const activePlace = () => state.places.find(p => p.id === state.activePlace);
 $('#allowPaths').checked = saved.footpaths !== false;
 $('#avoidLoops').checked = saved.avoidLoops !== false;
 $('#strictTurns').checked = !!saved.strict;
+$('#starMode').checked = !!saved.star;
 let planMode = saved.mode === 'pruefung' ? 'pruefung' : 'training';
 function renderMode() {
   document.querySelectorAll('[data-mode]').forEach(b => b.setAttribute('aria-pressed', b.dataset.mode === planMode));
   $('#modeHint').textContent = planMode === 'pruefung'
     ? 'Prüfung: Alle Vorschläge erfüllen die PO-Mindestanforderungen. Bevorzugt werden Trails mit genau den verlangten Richtungswechseln und ohne zusätzliche Entscheidungsstellen (Abzweigungen, an denen der Trail geradeaus weiterläuft). Gibt es solche nicht, zeigt ein Hinweis, wie viele zusätzliche Stellen ein Trail hat; zulässig ist er trotzdem.'
     : 'Training: wie Prüfung, aber mit etwas mehr Spielraum. Zusätzliche Entscheidungsstellen werden angezeigt.';
+  $('#starRow').hidden = planMode !== 'training';   // Sternplanung gibt es nur im Training
   updateExamBar();
   renderPlaces();   // „Nur Ort … neu planen“ gibt es nur im Prüfungsmodus
 }
@@ -2244,7 +2374,7 @@ document.querySelectorAll('[data-mode]').forEach(b => b.addEventListener('click'
   if (planMode === 'pruefung' && state.exam) applyExam(state.exam, true); else renderResults();
 }));
 renderMode();
-const persist = () => store.set({ basemap: typeof baseName === 'undefined' ? saved.basemap : baseName, places: state.places, activePlace: state.activePlace, teams: state.teams, startTime: $('#startTime').value, minDist: $('#minDist').value, footpaths: $('#allowPaths').checked, avoidLoops: $('#avoidLoops').checked, strict: $('#strictTurns').checked, mode: typeof planMode === 'undefined' ? saved.mode : planMode });
+const persist = () => store.set({ basemap: typeof baseName === 'undefined' ? saved.basemap : baseName, places: state.places, activePlace: state.activePlace, teams: state.teams, startTime: $('#startTime').value, minDist: $('#minDist').value, footpaths: $('#allowPaths').checked, avoidLoops: $('#avoidLoops').checked, strict: $('#strictTurns').checked, star: $('#starMode').checked, mode: typeof planMode === 'undefined' ? saved.mode : planMode });
 
 // ---------- Karte ----------
 const startCenter = activePlace().center;
@@ -2409,7 +2539,7 @@ $('#refreshOSM').addEventListener('click', async () => {
   finally { btn.disabled = false; }
 });
 renderPlaces();
-for (const id of ['#minDist', '#allowPaths', '#avoidLoops', '#strictTurns']) $(id).addEventListener('change', () => { invalidate(); persist(); });
+for (const id of ['#minDist', '#allowPaths', '#avoidLoops', '#strictTurns', '#starMode']) $(id).addEventListener('change', () => { invalidate(); persist(); });
 $('#startTime').addEventListener('change', () => { persist(); renderResults(); });
 
 // ---------- Ortssuche ----------
@@ -2741,7 +2871,7 @@ function landHtml(t) {
 // sind Hindernisse, weil sich die Suchkreise benachbarter Orte überlappen können.
 async function planPlaces(placeIds, mode, fixedLLs = []) {
   const minDist = +$('#minDist').value, many = state.places.length > 1;
-  const placed = fixedLLs.slice(), byTeam = new Map(), pools = {}, inOrder = [], chainInfo = [];
+  const placed = fixedLLs.slice(), byTeam = new Map(), pools = {}, inOrder = [], chainInfo = [], starInfo = [];
   let noAreas = false;
   for (const pid of placeIds) {
     const place = state.places.find(p => p.id === pid);
@@ -2761,7 +2891,7 @@ async function planPlaces(placeIds, mode, fixedLLs = []) {
     let out;
     try {
       out = await searchPlace(G, { ...opt, pid, label: many ? placeLabel(place) + ': ' : '', seed: state.seed, mode, minDist, teams, obstacles: obst,
-        levels: [...new Set(teams.map(t => t.level))] });
+        levels: [...new Set(teams.map(t => t.level))], star: mode === 'training' && $('#starMode').checked });
     } catch (e) { if (e && e.cancelled) return CANCELLED; throw e; }
     if (search.stop) return CANCELLED;   // Abbruch, während die Seite selbst rechnete (ohne Worker)
     const p = out.pools;
@@ -2783,11 +2913,15 @@ async function planPlaces(placeIds, mode, fixedLLs = []) {
         continue;
       }
     } else res = out.plans;
+    if (out.star && out.star.found) starInfo.push({ place: placeLabel(place), parking: out.star.parking });
     if (!res.plans.length) {
       const pre = many ? `${placeLabel(place)}: ` : '';
       const emptyLv = Object.keys(p).find(lv => !p[lv].list.length);
       let msg;
-      if (emptyLv) {
+      if (out.star) {
+        const wider = place.terrain === 'ort' ? ` In der Ortsliste bei Ort ${place.id} das Gelände „Ort und Ortsrand“ wählen oder` : place.terrain === 'mix' ? ` In der Ortsliste bei Ort ${place.id} das Gelände „Auch Feld und Wald“ wählen oder` : '';
+        msg = `${pre}Ich habe im Suchgebiet keinen Startpunkt gefunden, von dem aus alle ${teams.length} Trails sternförmig passen (${out.star.centers} Parkplätze und Kreuzungen geprüft).${wider} weniger Trails, kleineren Abstand oder ein größeres Suchgebiet wählen.`;
+      } else if (emptyLv) {
         const top = Object.entries(p[emptyLv].reasons).sort((a, b) => b[1] - a[1]).slice(0, 2).map(x => x[0]).join(', ');
         const tip = place.terrain === 'ort' ? `In der Ortsliste bei Ort ${place.id} statt „Nur im Ort“ das Gelände „Ort und Ortsrand“ wählen oder` : '';
         msg = `${pre}Für ${emptyLv} habe ich hier keinen passenden Trail gefunden (häufigste Gründe: ${top || 'kaum Wege'}). ${tip} Suchgebiet vergrößern oder Ort verschieben.`.replace('  ', ' ');
@@ -2801,7 +2935,12 @@ async function planPlaces(placeIds, mode, fixedLLs = []) {
   }
   if (inOrder.length) return { ok: true, plan: inOrder.map(x => x.c), teams: inOrder.map(x => x.team), pools, noAreas, chainInfo };
   const order = [...byTeam.keys()].sort((a, b) => a - b);
-  return { ok: true, plan: order.map(i => byTeam.get(i)), teams: order.map(i => ({ ...state.teams[i] })), pools, noAreas };
+  return { ok: true, plan: order.map(i => byTeam.get(i)), teams: order.map(i => ({ ...state.teams[i] })), pools, noAreas, starInfo };
+}
+// Startpunkte der Sterne für die Statuszeile
+function starStatus(info) {
+  if (!info || !info.length) return '';
+  return ' ' + info.map(x => `${info.length > 1 ? x.place + ': ' : ''}Stern ${x.parking ? 'an einem Parkplatz' : 'an einer Kreuzung (kein passender Parkplatz im Suchgebiet)'}`).join(' · ') + '.';
 }
 
 // Zusammenfassung der Ketten für die Statuszeile
@@ -2829,7 +2968,7 @@ async function run() {
     setStatus(`Trailplan erstellt. Alle Trails erfüllen die PO-Mindestanforderungen laut Kartendaten.` +
       (harder ? ` ${harder} Trail${harder === 1 ? ' hat' : 's haben'} zusätzliche Entscheidungsstellen (siehe Hinweis an der Karte).` : ' Keiner hat zusätzliche Entscheidungsstellen.') +
       ' Vor Ort prüfen: Zugang, Sicht, Abholung, Verkehr.' +
-      (r.noAreas ? ' Hinweis: Hier sind keine Wohngebiete kartiert, die Ortsgrenze ist nur geschätzt.' : '') + chainStatus(r.chainInfo));
+      (r.noAreas ? ' Hinweis: Hier sind keine Wohngebiete kartiert, die Ortsgrenze ist nur geschätzt.' : '') + chainStatus(r.chainInfo) + starStatus(r.starInfo));
     if (planMode === 'pruefung') startExam();
     renderResults();
     if (planMode === 'pruefung' && state.exam) drawExam(true);
@@ -2912,6 +3051,15 @@ function drawPlan() {
     L.marker(ll[0], { icon: icon('', color, 'S' + (i + 1)) }).bindTooltip(`Trail ${i + 1} · ${esc(state.planTeams[i].name)}: Start`).addTo(trailLayer);
     L.marker(ll[ll.length - 1], { icon: icon('lf-end', color, 'Z' + (i + 1)) }).bindTooltip(`Trail ${i + 1} · ${esc(state.planTeams[i].name)}: Ziel`).addTo(trailLayer);
   });
+  // Gemeinsamer Startpunkt der Sternplanung mit 50-m-Kreis
+  const stars = new Map();
+  plan.forEach(c => { if (c.star) stars.set(c.place + c.star.p.join(), c); });
+  for (const c of stars.values()) {
+    const ll = c.G.toLatLon(c.star.p);
+    L.circle(ll, { radius: 50, color: '#1d2620', weight: 2, dashArray: '4 4', fill: false, interactive: false }).addTo(trailLayer);
+    L.marker(ll, { icon: icon('', '#1d2620', c.star.parking ? 'P' : '✱'), zIndexOffset: -500 })   // Startmarken der Trails bleiben obenauf
+      .bindTooltip(c.star.parking ? 'Gemeinsamer Startpunkt: Parkplatz' : 'Gemeinsamer Startpunkt: Kreuzung').addTo(trailLayer);
+  }
   if (bounds.length) map.fitBounds(bounds, { padding: [30, 30] });
 }
 function pointAtDist(pts, d) {
@@ -4008,7 +4156,7 @@ function renderResults() {
       <div class="card-head"><span class="dot num" style="background:${COLORS[i % COLORS.length]}">${i + 1}</span>
         <span class="name"></span><span class="chip">${c.tr.level}</span>
         <span class="lay">legen bis <b>${layTime(c.tr.level)}</b></span></div>
-      <div class="stats"><span><b>${Math.round(v.length)}</b> m</span><span><b>${v.turns}</b> Richtungswechsel</span><span><b>${v.extraDecisions}</b> zusätzliche Entscheidungsstelle${v.extraDecisions === 1 ? '' : 'n'}</span><span><b>${v.crossings}</b> Kreuzung${v.crossings === 1 ? '' : 'en'}</span><span>Suchzeit <b>${lv.searchMin}</b> min</span></div>
+      <div class="stats"><span><b>${Math.round(v.length)}</b> m</span><span><b>${v.turns}</b> Richtungswechsel</span><span><b>${v.extraDecisions}</b> zusätzliche Entscheidungsstelle${v.extraDecisions === 1 ? '' : 'n'}</span><span><b>${v.crossings}</b> Kreuzung${v.crossings === 1 ? '' : 'en'}</span><span>Suchzeit <b>${lv.searchMin}</b> min</span>${c.star ? `<span>Start <b>${Math.round(Math.hypot(c.v.pts[0][0] - c.star.p[0], c.v.pts[0][1] - c.star.p[1]))}</b> m vom ${c.star.parking ? 'Parkplatz' : 'gemeinsamen Startpunkt'}</span>` : ''}</div>
       ${warn}
       <details class="checks"><summary style="color:var(${allOk ? '--ok' : hardOk ? '--warn' : '--bad'})">${allOk ? '✓' : hardOk ? '⚠' : '✕'} Regelprüfung: ${v.checks.filter(x => x.ok).length} von ${v.checks.length} Punkten erfüllt</summary><ul></ul></details>
       <details class="checks steps-box"><summary>Trailverlauf: ${steps.length} Schritte</summary><ol class="steps"></ol></details>
@@ -4047,6 +4195,7 @@ function renderResults() {
     const aRoute = linkBtn('Kompletten Trail in Maps anzeigen', routeLink(c));
     aRoute.title = 'Maps berechnet die Wege zwischen den Punkten selbst und kann leicht vom geplanten Trail abweichen.';
     act.append(bAlt, aStart, aEnd, aRoute);
+    if (c.star) act.append(linkBtn(c.star.parking ? 'Parkplatz' : 'Gemeinsamer Startpunkt', pointLink(c.G.toLatLon(c.star.p))));
     cards.append(card);
   });
   host.append(cards);

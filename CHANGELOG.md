@@ -2,6 +2,16 @@
 
 Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Die aktuelle Version steht in der App neben der Überschrift.
 
+## V3.5 – 27.10.2026
+
+Sternplanung im Training.
+
+- **Neues Häkchen „Sternförmig“** unter „Rahmen“ (nur im Training): Alle Trails starten an einem gemeinsamen Punkt und laufen in möglichst verschiedene Richtungen. Jeder Eintrag unter „Teams“ ist dann ein Trail, den auch mehrere Hunde laufen können.
+- **Startpunkt automatisch:** Die App sucht ihn im Suchgebiet selbst. Bevorzugt werden Parkplätze (erkannt an ihren Fahrgassen in OpenStreetMap); passt an keinem Parkplatz ein Stern, nimmt sie eine Kreuzung mit mindestens drei Wegen. Sie probiert mehrere Punkte und nimmt den mit dem am weitesten gefächerten Stern. Erneut „Trails planen“ würfelt neu.
+- **Regeln:** Jeder Trail beginnt höchstens 50 m vom Startpunkt. Im Nahbereich bis 80 m dürfen sich Trails nahe kommen oder dieselbe Straße nutzen (so finden auch fünf und mehr Trails Platz); danach gilt der normale Mindestabstand, und kein Trail läuft in den Nahbereich zurück. Länge, Richtungswechsel und Gelände wie im Training.
+- **Anzeige:** Startpunkt auf der Karte („P“ bei Parkplatz) mit 50-m-Kreis, in jeder Trailkarte die Entfernung des Starts zum Startpunkt und ein Link „Parkplatz“ bzw. „Gemeinsamer Startpunkt“. Alternativ-Trails halten die Sternregeln ein.
+- Die Suche läuft im Hintergrund wie die übrige Planung (Fortschritt „Prüfe Parkplatz … von …“, Abbrechen).
+
 ## V3.4 – 27.10.2026
 
 - Suchgebiet bis 5 km statt 2,5 km. Große Kreise brauchen beim ersten Laden der Wege und bei der Suche länger.
