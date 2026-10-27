@@ -99,6 +99,8 @@ h2 {
   font: 600 15px/1.2 var(--display); text-transform: uppercase; letter-spacing: .08em;
   color: var(--muted); margin: 0 0 10px;
 }
+.sec-head { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 6px 10px; margin-bottom: 10px; }
+.sec-head h2 { margin: 0; }
 section { min-width: 0; }
 label.lbl { display: block; font-size: 13px; color: var(--muted); margin-bottom: 4px; }
 input[type=text], input[type=time], input[type=date], select, textarea {
@@ -341,13 +343,15 @@ details.privacy p { margin: 6px 0 0; }
     </section>
 
     <section class="inputs">
-      <h2>2 · Teams</h2>
-      <div id="teams" class="teams"></div>
-      <div class="row" style="margin-top:10px">
-        <button class="small" type="button" data-add="MT-I">+ MT-I</button>
-        <button class="small" type="button" data-add="MT-II">+ MT-II</button>
-        <button class="small" type="button" data-add="MT-III">+ MT-III</button>
+      <div class="sec-head">
+        <h2>2 · Teams</h2>
+        <div class="row">
+          <button class="small" type="button" data-add="MT-I">+ MT-I</button>
+          <button class="small" type="button" data-add="MT-II">+ MT-II</button>
+          <button class="small" type="button" data-add="MT-III">+ MT-III</button>
+        </div>
       </div>
+      <div id="teams" class="teams"></div>
     </section>
 
     <section class="inputs">
@@ -2544,7 +2548,7 @@ const store = {
 const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946], contact: 'Felix Schuck, Obere Steigstr. 14, 97276 Margetshöchheim' };
 $('#privacyWho').textContent = CLUB.name + (CLUB.contact ? ', Kontakt: ' + CLUB.contact : '');
 // Versionsnummer: jede Änderung zählt um 0.1 hoch (V1.0 … V1.9, dann V2.0 …); Änderungen stehen in CHANGELOG.md
-const APP_VERSION = '3.8';
+const APP_VERSION = '3.9';
 document.getElementById('appVersion').textContent = 'V' + APP_VERSION;
 const saved = store.get();
 function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }
