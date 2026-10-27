@@ -79,12 +79,27 @@ test('Auch Zufahrten zählen als mögliche Abzweigung, sind aber keine Kreuzung'
   assert.equal(G.deg(3), 1);       // Gehweg neben der Straße ist kein Abzweig
 });
 
-test('PO: „Kreuzungen“ und „befahrener Straßenbereich“ beschreiben das erlaubte Gelände, keine Mindestzahl', () => {
+test('PO: ab MT-II mind. eine Kreuzung Pflicht, „befahrener Straßenbereich“ keine Mindestzahl', () => {
   const G = grid();
   const tr = { level: 'MT-II', mode: 'pruefung', legs: [leg(G, [1, 0], [1, 1], 60), leg(G, [1, 1], [1, 2]), leg(G, [1, 2], [2, 2]), leg(G, [2, 2], [3, 2], 0, 88)] };
   const v = Planner.validate(G, tr);
-  assert.equal(check(v, /Kreuzungen \(mind/), undefined);
+  const k = check(v, /mind\. 1 Kreuzung/);
+  assert.ok(k && k.ok && !k.soft, 'Kreuzungspflicht bei MT-II vorhanden und erfüllt');
+  assert.ok(v.crossings >= 1);
   assert.equal(check(v, /befahrener Straßenbereich/), undefined);
+  assert.equal(Planner.LEVELS['MT-I'].minCrossings, 0);
+});
+
+test('Kreuzung zählt ab drei begehbaren Wegen (Einmündung), Zufahrten zählen nicht mit', () => {
+  const g = (lat, lon) => ({ lat: 49.65 + lat / 110574, lon: 9.95 + lon / 72000 });
+  const osm = { elements: [
+    { type: 'way', id: 1, nodes: [1, 2, 3], geometry: [g(0, 0), g(0, 100), g(0, 200)], tags: { highway: 'residential', name: 'Hauptweg' } },
+    { type: 'way', id: 2, nodes: [2, 4], geometry: [g(0, 100), g(100, 100)], tags: { highway: 'residential', name: 'Seitenweg' } },
+    { type: 'way', id: 3, nodes: [3, 5], geometry: [g(0, 200), g(40, 200)], tags: { highway: 'service', service: 'driveway' } },
+  ] };
+  const G = Planner.buildGraph(osm, CENTER, 1200);
+  assert.equal(G.walkDeg(2), 3);   // Einmündung: Kreuzung
+  assert.equal(G.walkDeg(3) >= 3, false);   // nur Zufahrt: keine Kreuzung
 });
 
 // ---------- Straßen, Wege ----------

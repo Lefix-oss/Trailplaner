@@ -2,6 +2,15 @@
 
 Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Die aktuelle Version steht in der App neben der Überschrift.
 
+## V2.8 – 27.10.2026
+
+Kreuzungen bei MT-II als Pflicht (PO: „Kreuzungen“ im Gelände von MT-II und MT-III).
+
+- **Neue Regel:** MT-II (und MT-III) brauchen mindestens eine Kreuzung. Neue Planungen erfüllen sie immer; importierte Trails ohne Kreuzung bekommen in der Importliste den Befund „PO: mind. 1 Kreuzung (ab drei Wegen)“. MT-I bleibt ohne Kreuzungspflicht.
+- **Kreuzung ab drei Wegen:** Als Kreuzung zählt jetzt jede Stelle, an der sich mindestens drei begehbare Wege treffen, also auch eine Einmündung (bisher vier). Zufahrten zählen nicht mit. Die Zahl „Kreuzungen“ auf den Trailkarten fällt dadurch meist höher aus.
+- Mit den Giebelstädter Wegedaten findet die Planung gleich viele MT-II-Trails wie vorher: Jeder Trail mit zwei Richtungswechseln an Abzweigungen hat praktisch immer auch eine Kreuzung.
+- Bereits gespeicherte Prüfungsstände behalten ihre alte Kreuzungszahl, bis der Trail ersetzt oder neu importiert wird.
+
 ## V2.7 – 27.10.2026
 
 Sicherheit: Texte in den Karten-Tooltips werden maskiert.

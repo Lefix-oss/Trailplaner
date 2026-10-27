@@ -403,9 +403,9 @@ const Planner = (() => {
   // „befahrener Straßenbereich“ in MT-III. Richtungswechsel nur dort, wo der Hund mehrere Möglichkeiten hat.
   // Begriffe: Richtungswechsel = der Trail biegt an einer Abzweigung ab (Pflicht: mind. minTurns).
   // Zusätzliche Entscheidungsstelle = Abzweigung, an der der Trail geradeaus weiterläuft (keine PO-Grenze,
-  // möglichst vermeiden). Kreuzung = Stelle, an der sich mind. vier begehbare Wege treffen.
-  // „ca.“ = ±10 % (die PO nennt keine Toleranz). „Kreuzungen“ und „befahrener Straßenbereich“ stehen in der PO wie
-  // „Wald, Wiese“ in der Aufzählung des Geländes: Sie sind erlaubt, aber keine Pflicht (minCrossings/minTrafficM = 0).
+  // möglichst vermeiden). Kreuzung = Stelle, an der sich mind. drei begehbare Wege treffen (auch Einmündung, Vorgabe Verein).
+  // „ca.“ = ±10 % (die PO nennt keine Toleranz). „Kreuzungen“ ab MT-II sind Pflicht (mind. eine, Vorgabe Verein seit V2.8).
+  // „Befahrener Straßenbereich“ (MT-III) ist erlaubt, aber keine Pflicht (minTrafficM = 0).
   const LEVELS = {
     'MT-I': {
       key: 'MT-I', length: 300, minAgeH: 2, searchMin: 15,
@@ -415,13 +415,13 @@ const Planner = (() => {
     },
     'MT-II': {
       key: 'MT-II', length: 600, minAgeH: 4, searchMin: 30,
-      minTurns: 2, minCrossings: 0, minTrafficM: 0,
+      minTurns: 2, minCrossings: 1, minTrafficM: 0,
       allowed: ['quiet', 'medium'],
       terrain: 'belebtes Wohngebiet, Wald, Wiese, Kreuzungen',
     },
     'MT-III': {
       key: 'MT-III', length: 1000, minAgeH: 15, searchMin: 45,
-      minTurns: 4, minCrossings: 0, minTrafficM: 0,
+      minTurns: 4, minCrossings: 1, minTrafficM: 0,
       allowed: ['quiet', 'medium', 'busy'],
       terrain: 'belebtes Wohngebiet, Wald, Wiese, Kreuzungen, befahrener Straßenbereich',
     },
@@ -1006,7 +1006,7 @@ const Planner = (() => {
       const node = b.start, deg = G.deg(node);
       const turn = isTurnAt(G, node, tr.legs[i - 1].seg, dirAtEnd(a), tr.legs[i].seg);
       if (deg >= 3) { decisions++; if (turn) turns++; else straightDecisions++; }
-      if (G.walkDeg(node) >= 4) crossings++;
+      if (G.walkDeg(node) >= 3) crossings++;
       if (!crossOk(lvl, G, node)) badCross = true;
     }
     add(turns >= lvl.minTurns, `PO: mind. ${lvl.minTurns} Richtungswechsel an Abzweigungen`, `${turns} Richtungswechsel`);
@@ -1026,7 +1026,7 @@ const Planner = (() => {
       add(!rb, 'kein Kreisverkehr (Vereinsvorgabe Prüfung)', rb ? 'führt durch einen Kreisverkehr' : 'kein Kreisverkehr');
     }
     if (!lvl.allowed.includes('busy')) add(!badCross, 'keine Bundes- oder Staatsstraße gequert (laut Karte)', badCross ? 'quert eine Bundes- oder Staatsstraße' : 'keine Querung');
-    if (lvl.minCrossings) add(crossings >= lvl.minCrossings, `Kreuzungen (mind. ${lvl.minCrossings})`, `${crossings} Kreuzung${crossings === 1 ? '' : 'en'}`);
+    if (lvl.minCrossings) add(crossings >= lvl.minCrossings, `PO: mind. ${lvl.minCrossings} Kreuzung (ab drei Wegen)`, `${crossings} Kreuzung${crossings === 1 ? '' : 'en'}`);
     if (lvl.minTrafficM) {
       const tm = tr.legs.reduce((s, l) => s + trafficOfLeg(G, l), 0);
       add(tm >= lvl.minTrafficM, 'befahrener Straßenbereich', `${Math.round(tm)} m auf Straßen mit Verkehr`);
@@ -2134,7 +2134,7 @@ const store = {
 const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946], contact: '' };
 $('#privacyWho').textContent = CLUB.name + (CLUB.contact ? ', Kontakt: ' + CLUB.contact : '');
 // Versionsnummer: jede Änderung zählt um 0.1 hoch (V1.0 … V1.9, dann V2.0 …); Änderungen stehen in CHANGELOG.md
-const APP_VERSION = '2.7';
+const APP_VERSION = '2.8';
 document.getElementById('appVersion').textContent = 'V' + APP_VERSION;
 const saved = store.get();
 function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }
