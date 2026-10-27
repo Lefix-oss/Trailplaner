@@ -2,6 +2,10 @@
 
 Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Die aktuelle Version steht in der App neben der Überschrift.
 
+## V3.8 – 27.10.2026
+
+- Knopf „Eingaben löschen und neu anfangen“ steht jetzt oben im Abschnitt „1 · Ortschaft“ neben „+ weiteren Ort“ und „Wegedaten neu laden“ (bisher unter „Trails planen“).
+
 ## V3.7 – 27.10.2026
 
 Bessere automatische Prüfungskette.

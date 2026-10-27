@@ -205,7 +205,6 @@ ol.steps li.end .t { font-weight: 600; }
 .streets { padding: 6px 14px 0; font-size: 14px; color: var(--muted); }
 .exam-check { padding: 10px 14px 0; font-weight: 600; }
 .exam-bar { margin-top: 10px; flex-wrap: wrap; gap: 6px; }
-.reset-btn { margin-top: 8px; }
 /* GPX-Import */
 .imp { border: 1px solid var(--line); border-radius: 8px; background: var(--soft); padding: 12px; display: grid; gap: 10px; }
 .imp[hidden] { display: none; }
@@ -336,6 +335,7 @@ details.privacy p { margin: 6px 0 0; }
       <div class="row" style="gap:6px;flex-wrap:wrap">
         <button id="addPlace" class="small" type="button">+ weiteren Ort</button>
         <button id="refreshOSM" class="small" type="button" title="Holt die Wege des markierten Orts neu von OpenStreetMap">Wegedaten neu laden</button>
+        <button id="resetBtn" class="small" type="button">Eingaben löschen und neu anfangen</button>
       </div>
       <p class="hint">Oder einen Punkt auf der Karte antippen. Suche und Kartenklick gelten für den markierten Ort, geplant wird im Kreis. Rechts je Ort das Gelände (nur im Ort, mit Ortsrand oder auch Feld und Wald) und das Suchgebiet (Radius).</p>
     </section>
@@ -370,7 +370,6 @@ details.privacy p { margin: 6px 0 0; }
 
     <section>
       <button id="planBtn" class="primary" type="button">Trails planen</button>
-      <button id="resetBtn" class="small reset-btn" type="button">Eingaben löschen und neu anfangen</button>
       <div id="examBar" class="row exam-bar" hidden>
         <button id="examSave" class="small" type="button">Stand speichern …</button>
         <button id="examOpen" class="small" type="button">Gespeicherten Stand öffnen …</button>
@@ -2545,7 +2544,7 @@ const store = {
 const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946], contact: 'Felix Schuck, Obere Steigstr. 14, 97276 Margetshöchheim' };
 $('#privacyWho').textContent = CLUB.name + (CLUB.contact ? ', Kontakt: ' + CLUB.contact : '');
 // Versionsnummer: jede Änderung zählt um 0.1 hoch (V1.0 … V1.9, dann V2.0 …); Änderungen stehen in CHANGELOG.md
-const APP_VERSION = '3.7';
+const APP_VERSION = '3.8';
 document.getElementById('appVersion').textContent = 'V' + APP_VERSION;
 const saved = store.get();
 function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }
