@@ -2,6 +2,164 @@
 
 Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Ab V3.9 zählen kleinere Änderungen als Unternummer weiter (V3.9.1, V3.9.2 …). Die aktuelle Version steht in der App neben der Überschrift.
 
+---
+
+# Aktueller Stand und Übergabe (Stand 27.10.2026, wird bei jeder Veröffentlichung aktualisiert)
+
+## 1. Versions- und Veröffentlichungsstand
+- **Veröffentlicht (GitHub Pages, Zweig `main`):** **V3.9.1**, Commit `e7f2408`. Pages-Lauf am 27.10.2026 erfolgreich, Live-Seite per Abruf geprüft.
+- **Lokal, noch NICHT veröffentlicht:** **V3.9.2** (Laden der Wegedaten in Kacheln), Zweig `entwicklung`. Veröffentlichung erst nach ausdrücklicher Freigabe.
+- **Rückfallstand:** Tag `v3.6` (Commit `8f490af`, vor der neuen Prüfungskette) ist gepusht. Zurück auf einen Stand per `git revert` des betreffenden Commits auf `main` und Push. Das Speicherformat hat sich seit V3.6 nicht geändert.
+- **Zweige:** `main` = Live-Seite, `entwicklung` = Arbeitsstand. `forschung` (nur lokal, nie pushen) enthält Prototypen, Messreihen und Wegedaten Ochsenfurt (siehe 6). Die Beschlüsse daraus stehen in diesem Dokument.
+- **Ablauf:** Bauen auf `entwicklung` → Tests → Freigabe → Fast-Forward nach `main` → Push → Pages-Lauf über die GitHub-API abwarten.
+
+## 2. Verhalten der Funktionen (V3.9.1, dazu V3.9.2 lokal)
+- **Training (Tagesplan):** Je Stufe ein Vorrat von bis zu 45 Kandidaten (`pool`) aus Zufallsläufen und anschließender systematischer Suche (Startpunkte alle 25 m). Daraus wählt eine zufallsgestützte Kombination (`plans`) einen verträglichen Satz. Länge immer genau die Solllänge, Startstücke ab 40 m. „Alternativ-Trail“ je Karte. Erneutes Planen liefert andere Trails (Startwert zählt hoch).
+- **Stern (nur Training, Häkchen „Sternförmig“):** Die App sucht den Startpunkt selbst: zuerst Parkplätze aus OSM (an Fahrgassen erkannt, zusammengefasst im Umkreis von 80 m), sonst Kreuzungen ab 3 Wegen. Geprüft werden je Art bis zu 20 zufällig gewählte Punkte im inneren Kreis (Radius − 150 m), innerhalb von 10 s mit bzw. 20 s ohne Ergebnis. Regeln siehe 3. Kein Stern: Meldung mit Knöpfen „75-m-“ bzw. „100-m-Startkreis versuchen“ (gilt für einen Durchgang, technisch höchstens 150 m) und Hinweis „auf zwei Orte verteilen“.
+- **Automatische Prüfungskette (seit V3.7):** Mit Web Worker läuft die kombinierte Suche mit **30 s Rechenbudget** je Planungslauf, bei mehreren Orten aufgeteilt. Das Laden der Wegedaten zählt nicht mit. Ablauf:
+  1. Die bisherige Suche (Vorräte + `chain`) liefert die Startlösung.
+  2. Übergänge werden nach der Kettenregel neu berechnet.
+  3. Unabhängige Prüfung.
+  4. Systematische Kandidaten (10-m-Startraster, so weit das Budget reicht), zusammengeführt mit den bisherigen (gleiche Wegfolge = ein Kandidat, kein Ähnlichkeitsfilter).
+  5. Exakte Verbesserung mit der Startlösung als Schranke.
+
+  Übernommen werden nur geprüfte Ketten. Status „beste im Budget gefundene Lösung“, keine Aussage über eine beste mögliche Kette. Ohne Worker bildet die Seite die Kette wie vor V3.7 (ohne Budget). Lücken stehen in Karte, Statuszeile und Bögen.
+- **GPX-Import und Anordnung (unverändert seit V2.x):** Die Linien bleiben unverändert, Länge laut GPX (±10 %), die Zuordnung zum Wegenetz dient nur der Prüfung. Die Reihenfolge wird bis 12 Trails je Ort exakt berechnet (`orderFixed`, dynamische Programmierung) und dabei noch mit der alten Fußwegregel bewertet. Die Übergänge danach berechnet `transitPath` (nicht kreuzen, berühren, benutzen; Suche bis 1,5 km). 75/250 m sind beim Import nur Warnungen. „Kette neu aufbauen“ gibt es nur, wenn alle Trails importiert sind.
+- **Einzelnen Trail ersetzen:** Rechnet weiter mit den **alten** Regeln: Vorrat im Worker, Ersatzsuche auf der Seite, Fußweg mit 30-m-Abstand zu späteren Trails, nur Solllänge, Startstücke ab 40 m. Lücken werden nachgefragt.
+- **Manuelles Bearbeiten / Drag-and-drop:** **nicht vorhanden**, geplant (siehe 5).
+- **Speichern, Neuladen, Bögen:**
+  - Der Prüfungsstand liegt in `localStorage` unter `trailplaner-pruefung`.
+  - Lässt er sich nicht öffnen, wird er als `trailplaner-pruefung-sicherung` aufgehoben.
+  - Datei speichern bzw. öffnen als JSON (Format Version 2, strenge Prüfung in `parseExam`, Grenzen: 60 Trails, 5000 Punkte, 300 Schritte, 100 Namen).
+  - Prüfungsbögen und Übersicht pro Ort zum Drucken bzw. als PDF, WhatsApp-Links für Starts und Ziele.
+  - Trails mit 282 bzw. 564 m aus der neuen Kette sind auch für ältere Versionen gültig.
+
+## 3. Geltende Such- und Bewertungsregeln
+Ausführliche Kriterientabelle mit Herkunft: auf Zweig `forschung` unter `forschung/trailsuche/suchkriterien.md` (nicht veröffentlicht). Kurzfassung:
+
+**Harte Regeln (alle Modi, Prüfung `validate`)**
+| Regel | Wert | Herkunft |
+|---|---|---|
+| Länge | MT-I 300, MT-II 600, MT-III 1000 m | PO („ca.“) |
+| Längentoleranz | ±10 % | Planer-Auslegung, **keine belegte PO-Toleranz** |
+| Richtungswechsel | mind. 1 / 2 / 4, an Abzweigungen; zählt ab 40° | Mindestzahl PO; 40° eigene Auslegung |
+| Kreuzung | MT-II/III mind. 1, Kreuzung = Knoten mit ≥ 3 begehbaren Wegen | „Kreuzungen“ nennt die PO; Mindestzahl und „ab 3“ Nutzerentscheidung (V2.8) |
+| Wegarten | MT-I ruhig, MT-II + mittel, MT-III + belebt (aus OSM-Straßentyp) | PO-Gelände; Zuordnung zu OSM eigene Auslegung |
+| Bundes-/Staatsstraße queren | MT-I/II nein | Nutzerentscheidung |
+| Kreisverkehr | in der Prüfung nein | Vereinsvorgabe |
+| Abholung am Ziel | befahrbare Straße ≤ 30 m | PO verlangt Aufnahme mit dem Fahrzeug; 30 m eigene Festlegung |
+| Start–Ziel-Luftlinie | ≥ max(60 m, 20 % der Länge) | Herkunft unklar |
+| Rückannäherung | Häkchen „Trails vermeiden, die auf sich zurücklaufen“, Faktor 0,5 | Nutzer (Häkchen), Faktor unklar |
+| Gelände „Nur im Ort / Ort und Ortsrand / Auch Feld und Wald“ | ≥ 85 % / ≥ 50 % / 0 % im kartierten Wohngebiet | Einstellung Nutzer; Prozentwerte unklar |
+| Abstand zwischen Trails | 20/30/50/80 m wählbar, Standard 30 m | Nutzereinstellung |
+| Abzweigungsabstand | 15 m (auch Start → erste Entscheidungsstelle) | Planervorgabe, Herkunft ungeklärt, keine PO-Regel |
+| „Streng“ | macht „keine zusätzlichen Entscheidungsstellen“ zur Pflicht | Nutzer |
+
+**Weiche Bewertung:** „Zusätzliche Stellen“ = zusätzliche Entscheidungsstellen (geradeaus passiert) + Richtungswechsel über der Mindestzahl. Ein Nachteil, kein Ausschluss (Nutzerentscheidung 22.10.2026).
+
+**Modusabhängig**
+| | Training | Stern | Automatische Prüfungskette | GPX-Import | Ersetzen |
+|---|---|---|---|---|---|
+| Erzeugte Längen | nur Soll | nur Soll | Soll, −6 %, +6 % (seit V3.7) | laut GPX | nur Soll |
+| Startstück | ≥ 40 m | ≥ 20 m (im Startkreis) | ≥ 20 m + Start → erste Entscheidung ≥ 15 m geprüft | – | ≥ 40 m |
+| Übergänge | – | – | `transitPath`-Regel ohne 30-m-Puffer, aber 75–250 m Fußweg und ≥ 75 m Luftlinie | `transitPath`, bis 1,5 km gesucht, 75/250 m nur Warnung | 30-m-Abstand zu späteren Trails, 75–250 m |
+| Rangfolge | zusätzliche Stellen, dann Zufall unter Gleichen | zusätzliche Stellen, Fächerung (Gewichtung 0,25), Parkplatz vor Kreuzung | 1. Lücken 2. zusätzliche Stellen 3. Summe Übergänge 4. Abweichung von der Solllänge | wenigste Lücken, kürzeste Übergänge | wenigste Lücken, dann weniger zusätzliche Stellen |
+| Zeitgrenze | keine feste | 10/20 s | 30 s (+ alte Kette mit 1,5 s je Lückenstufe) | – | – |
+
+**Stern im Detail:**
+- Start ≤ Startkreis (50 m, auf Knopf 75/100 m).
+- Im Startkreis läuft kein Trail über den Start eines anderen (≥ 10 m) oder dasselbe Wegstück (≥ 8 m). Bei gemeinsamem Start (< 10 m auseinander) sind die Wege ab 12 m getrennt (V3.9.1).
+- Außerhalb des Kreises voller Mindestabstand, kein Zurücklaufen in den Kreis.
+- Zwischen Kreisrand und Rand + 8 m bleibt eine schmale Übergangszone (Stützpunktabstand).
+
+**Zufall und Reproduzierbarkeit:** Zufall steckt in den Zufallsläufen, im Mischen der Suchreihenfolge, im Bewertungsrauschen (`+ Zufall · 0,3`), in der Auswahl unter Gleichen und in der Stichprobe der Stern-Startpunkte. Der Startwert kommt aus einem Klickzähler, beim Ersetzen aus der Uhrzeit. Zeitgrenzen (Kette, Stern, 30-s-Budget) machen Ergebnisse geräte- und lastabhängig, auch bei gleichem Startwert. Eine Wiederholbarkeit wird nicht zugesagt.
+
+**Weitere technische Grenzen:**
+- Dublettenfilter im Vorrat: > 60 % gemeinsame Wegstücke, der zuerst gefundene bleibt; im Stern 75 %.
+- Suchgrenzen: Richtungswechsel höchstens Mindestzahl + 2, Entscheidungsstellen höchstens Mindestzahl + 6.
+- Suchgebiet 300 m bis 5 km.
+
+**Wegedaten:**
+- Reihenfolge der Quellen: im Browser gespeichert (14 Tage frisch) → fester Auszug Giebelstadt/Essfeld vom 21.10.2026 → Overpass-Server (overpass-api.de, overpass.kumi.systems, overpass.private.coffee, gestaffelt im Abstand von 8 s).
+- Ab V3.9.2 (lokal) in Kacheln, siehe Eintrag V3.9.2. Bei Serverausfall ältere gespeicherte Daten mit Hinweis.
+- Geländeanteile (Hinweis „Gelände außerhalb der PO-Liste“ ab 5 %) nur im Prüfungsmodus.
+
+## 4. Wichtige technische Eigenschaften
+- **Web Worker (seit V3.2):**
+  - Die Suche läuft im Hintergrund, die Seite bleibt bedienbar.
+  - Während der Suche sind Ort, Teams, Rahmen, Modus, Planen, Löschen, Öffnen, Import und Kartenklick gesperrt.
+  - „Suche abbrechen“ beendet den Worker sofort. Verspätete Meldungen werden über eine Auftragsnummer verworfen.
+  - Prüfungskette: Der Worker meldet jede geprüfte bessere Kette. Bei Abbruch wird die zuletzt geprüfte übernommen, bei mehreren Orten nur, wenn gerade der letzte Ort sucht, sonst bleibt der bisherige Stand.
+- **Veraltete Ergebnisse:** „Nur Ort neu planen“ und „Ersetzen“ setzen ihr Ergebnis nicht ein, wenn sich die Trails des Prüfungsstands während der Suche geändert haben. „Kette neu aufbauen“ prüft nach dem Warten erneut Stand und Modus.
+- **Mehrere Orte:** Sie werden nacheinander geplant. Trails früherer Orte sind Hindernisse. Das Kettenbudget wird gleichmäßig verteilt.
+- **Abschlussprüfung (Kette):** `checkChain` prüft neu:
+  - PO je Trail,
+  - Start → erste Entscheidung,
+  - Abstand der Trails,
+  - Übergänge 75–250 m und Luftlinie ≥ 75 m,
+  - Anfang und Ende jedes Übergangs,
+  - keine Berührung späterer Trails,
+  - vom nächsten Trail nur dessen Startstück.
+
+  Gibt es keine geprüfte Kette, wird wie bisher ohne Kette geplant.
+- **Speicherformat:** unverändert (Version 2). Seit V3.9.2 (lokal) zusätzlich Kacheln im IndexedDB-Speicher „trailplaner“, ältere Gesamtabfragen werden weiter genutzt.
+
+## 5. Bekannte Einschränkungen und offene Aufgaben
+- **Einschränkung, extern:** Die freien Overpass-Server sind zeitweise überlastet. Am 27.10.2026 gemessen: overpass-api.de meldete „alle Rechenplätze belegt“ (502) bzw. brauchte rund 40 s je Kachel, private.coffee 504 nach 86 s, kumi keine Antwort in 90 s. Das erste Laden großer Gebiete kann deshalb Minuten dauern oder scheitern. V3.9.2 mildert das, behebt es aber nicht.
+- **Einschränkung:** Bei 10 Trails bleiben in der Prüfungskette oft Lücken. Ergebnisse schwanken von Lauf zu Lauf (Zeitgrenzen).
+- **Einschränkung:** Häufiger 282/564 m lange Trails in der Kette. Vom Nutzer akzeptiert.
+- **Einschränkung:** „Ersetzen“ nutzt andere Übergangsregeln als die neue Kette (siehe 2).
+- **Fehler bzw. Schwäche, zurückgestellt:** Der Stern-Startpunkt kann in Gewerbegebieten landen, weil dort viele Parkplatz-Fahrgassen kartiert sind. Im Training gibt es keine Geländeprüfung. Lösungsvorschläge liegen vor (Gewerbe-Parkplätze nicht bevorzugen, Trails außerhalb der PO-Gelände abwerten, Hinweis im Training). Laut Nutzer „später“.
+- **Erweiterung, geplant:** Drag-and-drop mit „Trail neu prüfen“.
+- **Erweiterung, zurückgestellt:**
+  - Teilwegkorrektur: Gelände, Fußweg und Sperren nach den benutzten Abschnitten bewerten, statt ganze Wegstücke. Erfordert einen Umbau des Wegenetzes.
+  - Bessere Suche auch für Training, Stern und GPX-Anordnung. Bewusst nicht in V3.7.
+  - Angleichung der Fußwegregel in der GPX-Reihenfolge (offener Punkt seit V2.0).
+- **Erweiterung, nach der Prüfung:** Handbuch, Schätzung „ruhig/belebt“, Gelände auch im Training und auf dem Bogen, Teilnehmer-Check, Dunkelheitswarnung, größere Knöpfe am Handy, Druck mit langen Inhalten, Trainingskarten und Abschnitte einklappbar.
+- **Nur dokumentiert:** Mehrvereinsbetrieb (`docs/architektur/mehrvereinsbetrieb.md`).
+- **Bewusst nicht gewünscht:** Verlaufsplan auf dem Bogen, Gehzeit bei „legen bis“, Markierung „ruhig/belebt“ von Hand.
+
+## 6. Nachweise
+- **Testsuite (Node 24, `node --test "tests/*.test.mjs"`):** V3.9.2 lokal 126 Tests, 125 bestanden, 1 übersprungen (`testdaten.test.mjs` braucht den lokalen Ordner `testdaten/`, der nie ins Repository kommt). Wichtige Dateien: `tests/kette.test.mjs` (Grenzen der Kette), `tests/star.test.mjs` (Sternregeln, unabhängig nachgeprüft), `tests/worker.test.mjs`.
+- **Browser (Chrome im Vorschaufenster der Entwicklungsumgebung, PC):**
+  - V3.7: C3 (Giebelstadt, Nur im Ort, 3×MT-I + 2×MT-II) Kette ohne Lücke in 28 s.
+  - V3.7: C5 (Giebelstadt, Ort und Ortsrand, 5×MT-I + 5×MT-II) Abbruch und Neustart ohne verspätete Meldungen.
+  - V3.7: Ersetzen, Speichern, Neuladen und Prüfungsbögen funktionieren.
+  - V3.9.1: Stern mit 4 Trails ohne Fehler.
+  - V3.9.2: Ochsenfurt mit 3 km Radius, siehe Eintrag.
+- **Handy:** Der Nutzer meldete den Test von V3.7 als erfolgreich. Gerät und Browser sind nicht dokumentiert. Firefox, Safari und weitere Geräte sind nicht getestet.
+- **Forschung (lokal auf Zweig `forschung`):**
+  - Prototypen, Kontrollfälle (alle Kombinationen durchgerechnet) und Messreihen.
+  - Ergebnis, PC/Node: Die heutige Zufallssuche schwankt. Die kombinierte Suche senkte die Lücken der Kette z. B. bei C3 von 1–2 auf 0 und bei C5 von 9 auf 2–3 (30 s Budget).
+  - Diese Werte sind Einzelmessungen unter festen Bedingungen, keine Garantie.
+- **Nicht getestet:** Handy-Leistung bei großen Gebieten, Verhalten bei sehr vielen gespeicherten Kacheln (kein Aufräumen), mehrere Orte mit Kette und Abbruch.
+
+---
+
+## V3.9.2 – 27.10.2026 (lokal, noch nicht veröffentlicht)
+
+- **Für den Nutzer:** Wegedaten werden in Bereichen von etwa 2,2 × 2,2 km geladen und einzeln im Browser gespeichert. Die Statuszeile zeigt „Lade Wege …: 5 von 12 Bereichen“. Ein neuer Radius oder eine leicht versetzte Mitte lädt nur fehlende Bereiche nach. Scheitert ein Bereich, nennt die Meldung, wie viele schon gespeichert sind, und ein neuer Versuch lädt nur noch den Rest.
+- **Geänderte Regeln bzw. Technik:**
+  - Raster 0,02° × 0,03°, nur Bereiche, die den Suchkreis (+ 50 m) berühren.
+  - Höchstens zwei Bereiche gleichzeitig.
+  - Gescheiterte Bereiche bekommen am Ende einen zweiten Versuch.
+  - Bei 429/502/503/504 wartet die App (Serverangabe oder 4 bzw. 8 s, höchstens 15 s) und fragt bis zu zweimal neu, erst dann den nächsten Server.
+  - Abbruch einer Abfrage nach 90 s statt 65 s.
+  - Unvollständige Wegedaten werden nie verwendet.
+  - Grund: häufige Zeitüberschreitungen bei großen Gebieten, weil die Server überlastet sind.
+- **Behobene Fehler:** Jeder Radius- oder Ortswechsel löste eine komplett neue Gesamtabfrage aus. Überlastungsantworten (z. B. 502 „alle Rechenplätze belegt“) führten ohne Wartezeit direkt zum nächsten Server.
+- **Bleibende Einschränkungen:**
+  - Die Serverüberlastung selbst bleibt.
+  - Das erste Laden großer Gebiete kann Minuten dauern.
+  - Die Geländeflächen (nur Prüfungsmodus) werden weiter in einer Abfrage geladen.
+  - Gespeicherte Bereiche werden nicht automatisch aufgeräumt.
+- **Prüfungen:**
+  - Testsuite 126 Tests, 125 bestanden, 1 übersprungen. Neu: Abdeckung des Suchkreises durch die Bereiche, Wiederverwendung bei größerem Radius bzw. versetzter Mitte, zusammengeführte Bereiche ergeben dasselbe Wegenetz wie eine Gesamtabfrage.
+  - Browser (Chrome, PC), Ochsenfurt, 3 km, echter Overpass bei Überlastung:
+    - 1. Lauf: 4 von 12 Bereichen geladen, Meldung.
+    - 2. Lauf: die übrigen 8 geladen (einer im zweiten Versuch, rund 400 s), Planung erfolgreich.
+    - 3. Lauf: keine Serveranfrage, 0,6 s.
+
 ## V3.9.1 – 27.10.2026
 
 - **Stern: keine Überschneidung mehr im Startkreis.** Trails dürfen nah beieinander oder am selben Punkt starten, aber kein Trail läuft über den Startpunkt eines anderen (mind. 10 m Abstand) oder über dasselbe Wegstück (mind. 8 m Abstand). Bei gemeinsamem Startpunkt (Starts weniger als 10 m auseinander) müssen die Wege ab 12 m getrennt sein. Bisher durften sich Trails im 50-m-Startkreis beliebig nahe kommen; dadurch konnten zwei Trails dieselbe Straße in entgegengesetzter Richtung laufen (gemeldet aus dem Gewerbegebiet Heuchelhof-Rottenbauer). Außerhalb des Startkreises gilt wie bisher der volle Mindestabstand.

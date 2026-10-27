@@ -2351,6 +2351,24 @@ const Pruefung = (() => {
     const dLat = (radius + 50) / 110574, dLon = (radius + 50) / (111320 * Math.cos(c.lat * Math.PI / 180));
     return [c.lat - dLat, c.lon - dLon, c.lat + dLat, c.lon + dLon];
   }
+  // Kacheln für die Wegedaten (V3.9.2): festes Raster 0,02° × 0,03° (ca. 2,2 × 2,2 km). Geladen und gespeichert wird je Kachel,
+  // nur Kacheln, die den Suchkreis (plus 50 m Rand) berühren. Neuer Radius oder leicht versetzte Mitte: nur fehlende Kacheln nachladen.
+  const TILE_LAT = 0.02, TILE_LON = 0.03;
+  function osmTiles(c, radius) {
+    const b = osmBBox(c, radius), r = radius + 50, kx = 111320 * Math.cos(c.lat * Math.PI / 180), ky = 110574, out = [];
+    for (let i = Math.floor(b[0] / TILE_LAT); i * TILE_LAT < b[2]; i++) for (let j = Math.floor(b[1] / TILE_LON); j * TILE_LON < b[3]; j++) {
+      const s = i * TILE_LAT, w = j * TILE_LON, n = s + TILE_LAT, e = w + TILE_LON;
+      const dy = (Math.max(s, Math.min(c.lat, n)) - c.lat) * ky, dx = (Math.max(w, Math.min(c.lon, e)) - c.lon) * kx;   // nächster Punkt der Kachel
+      if (Math.hypot(dx, dy) <= r) out.push({ key: `kachel:${i},${j}`, bbox: [s, w, n, e] });
+    }
+    return out;
+  }
+  // Antworten mehrerer Kacheln zusammenführen: Wege, Flächen und Knoten, die in mehreren Kacheln liegen, nur einmal
+  function mergeOSM(list) {
+    const seen = new Set(), elements = [];
+    for (const d of list) for (const el of (d && d.elements) || []) { const k = el.type + ':' + el.id; if (!seen.has(k)) { seen.add(k); elements.push(el); } }
+    return { elements };
+  }
   // Fester Wegedaten-Auszug (mit der App ausgeliefert), der das Rechteck ganz enthält, sonst null
   function findExtract(manifest, b) {
     const list = (manifest && manifest.extracts) || [];
@@ -2543,7 +2561,7 @@ const Pruefung = (() => {
     return ex;
   }
 
-  return { FORMAT, VERSION, LEVEL_KEYS, PLACE_IDS, parseNames, splitTeam, draw, setCell, balance, obstacle, shareText, placeOf, mergePlaces, replacePlaceTrails, osmKey, osmFresh, osmBBox, findExtract, overpassQuery, landQuery, placeChoices, serializeExam, parseExam, GPX_LIMITS, parseGpx, placeFor, groupTracks, reverseName };
+  return { FORMAT, VERSION, LEVEL_KEYS, PLACE_IDS, parseNames, splitTeam, draw, setCell, balance, obstacle, shareText, placeOf, mergePlaces, replacePlaceTrails, osmKey, osmFresh, osmBBox, osmTiles, mergeOSM, findExtract, overpassQuery, landQuery, placeChoices, serializeExam, parseExam, GPX_LIMITS, parseGpx, placeFor, groupTracks, reverseName };
 })();
 if (typeof module !== 'undefined') module.exports = Pruefung;
 </script>
@@ -2561,7 +2579,7 @@ const store = {
 const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946], contact: 'Felix Schuck, Obere Steigstr. 14, 97276 Margetshöchheim' };
 $('#privacyWho').textContent = CLUB.name + (CLUB.contact ? ', Kontakt: ' + CLUB.contact : '');
 // Versionsnummer: jede Änderung zählt um 0.1 hoch (V1.0 … V1.9, dann V2.0 …); Änderungen stehen in CHANGELOG.md
-const APP_VERSION = '3.9.1';
+const APP_VERSION = '3.9.2';
 document.getElementById('appVersion').textContent = 'V' + APP_VERSION;
 const saved = store.get();
 function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }
@@ -2910,39 +2928,77 @@ async function loadOSM(c, radius, refresh = false, label = '') {
       return ex.data;
     }
   }
-  try {
-    const data = await fetchOSM(c, radius);
-    osmCache.set(key, { savedAt: Date.now(), data });
-    note('');
-    return data;
-  } catch (e) {
+  // Kacheln (V3.9.2): frische aus dem Browser, fehlende vom Server (höchstens zwei gleichzeitig), bei Ausfall ältere gespeicherte
+  const tiles = Pruefung.osmTiles(c, radius), parts = [], todo = [], old = new Map();
+  for (const t of tiles) {
+    const v = await osmCache.get(t.key);
+    if (v && !refresh && Pruefung.osmFresh(v.savedAt, Date.now())) parts.push(v.data);
+    else { todo.push(t); if (v) old.set(t.key, v); }
+  }
+  let done = tiles.length - todo.length, oldest = null;
+  const failed = [];
+  const show = () => { if (todo.length) setStatus(`Lade Wege${who} aus OpenStreetMap: ${done} von ${tiles.length} Bereichen …`); };
+  show();
+  let next = 0;
+  const loadTile = async t => {
+    const data = await fetchOverpass(Pruefung.overpassQuery(t.bbox));
+    osmCache.set(t.key, { savedAt: Date.now(), data });
+    parts.push(data);
+  };
+  await Promise.all([0, 1].map(async () => {
+    while (next < todo.length) {
+      const t = todo[next++];
+      try { await loadTile(t); } catch { failed.push(t); }
+      done++; show();
+    }
+  }));
+  // Gescheiterte Bereiche ein zweites Mal (nacheinander), danach notfalls ältere gespeicherte Daten
+  for (const t of failed.splice(0)) {
+    setStatus(`Lade Wege${who} aus OpenStreetMap: zweiter Versuch für einen Bereich …`);
+    try { await loadTile(t); } catch {
+      const v = old.get(t.key);
+      if (v && !refresh) { parts.push(v.data); oldest = Math.min(oldest ?? v.savedAt, v.savedAt); } else failed.push(t);
+    }
+  }
+  if (failed.length) {
     if (cached && !refresh) {   // Server alle überlastet: lieber ältere Daten als gar keine, aber mit Hinweis
       note(`Server nicht erreichbar, im Browser gespeicherter Stand vom ${day(cached.savedAt)} wird verwendet. Später „Wegedaten neu laden“.`);
       return cached.data;
     }
-    throw e;
+    // unvollständige Wegedaten nie verwenden; geladene Bereiche bleiben gespeichert
+    throw Object.assign(new Error(`${failed.length} von ${tiles.length} Bereichen nicht ladbar`), { tilesOk: tiles.length - failed.length, tilesTotal: tiles.length });
   }
+  note(oldest ? `Server teilweise nicht erreichbar, für einzelne Bereiche wird der gespeicherte Stand vom ${day(oldest)} verwendet. Später „Wegedaten neu laden“.` : '');
+  return Pruefung.mergeOSM(parts);
 }
 // Ein Server nach dem anderen: der nächste kommt erst nach 8 s ohne Antwort oder sofort nach einem Fehler dazu
-// (schont die freien Server); die erste vollständige Antwort gewinnt, nach 65 s wird abgebrochen
+// (schont die freien Server); die erste vollständige Antwort gewinnt, nach 90 s wird abgebrochen (Wartezeiten bei Überlastung inklusive)
 const OVERPASS_STAGGER = 8000;
-const fetchOSM = (c, radius) => fetchOverpass(Pruefung.overpassQuery(Pruefung.osmBBox(c, radius)));
 async function fetchOverpass(q) {
   const ctls = OVERPASS.map(() => new AbortController());
   const gates = OVERPASS.map(() => { let open; const p = new Promise(r => { open = r; }); return { p, open }; });
   const timers = OVERPASS.map((_, k) => (k ? setTimeout(gates[k].open, k * OVERPASS_STAGGER) : (gates[0].open(), null)));
-  timers.push(setTimeout(() => { ctls.forEach(x => x.abort()); gates.forEach(g => g.open()); }, 65000));
+  timers.push(setTimeout(() => { ctls.forEach(x => x.abort()); gates.forEach(g => g.open()); }, 90000));
   try {
     return await Promise.any(OVERPASS.map(async (url, k) => {
       await gates[k].p;
       try {
-        if (ctls[k].signal.aborted) throw new Error('abgebrochen');
-        const r = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal: ctls[k].signal });
-        if (!r.ok) throw new Error('HTTP ' + r.status);
-        const data = await r.json();
-        // Bei Zeitüberschreitung liefert Overpass oft nur einen Teil der Daten mit einem Hinweis
-        if (!data || !Array.isArray(data.elements) || /error/i.test(data.remark || '')) throw new Error('unvollständig');
-        return data;
+        // Überlastet (429, 502 „alle Rechenplätze belegt“, 503, 504): kurz warten (bei Angabe des Servers dessen Wartezeit,
+        // höchstens 15 s) und bis zu zweimal neu fragen
+        for (let attempt = 0; ; attempt++) {
+          if (ctls[k].signal.aborted) throw new Error('abgebrochen');
+          const r = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal: ctls[k].signal });
+          if ([429, 502, 503, 504].includes(r.status) && attempt < 2) {
+            const wait = Math.min(15000, (+r.headers.get('Retry-After') || 0) * 1000 || 4000 * (attempt + 1));
+            await new Promise((res, rej) => { const t = setTimeout(res, wait); ctls[k].signal.addEventListener('abort', () => { clearTimeout(t); rej(new Error('abgebrochen')); }, { once: true }); });
+            continue;
+          }
+          if (!r.ok) throw new Error('HTTP ' + r.status);
+          const data = await r.json();
+          // Bei Zeitüberschreitung liefert Overpass oft nur einen Teil der Daten mit einem Hinweis
+          if (!data || !Array.isArray(data.elements) || /error/i.test(data.remark || '')) throw new Error('unvollständig');
+          return data;
+        }
       } catch (e) { if (gates[k + 1]) gates[k + 1].open(); throw e; }
     }));
   } catch (e) { throw (e && e.errors && e.errors[0]) || e; }
@@ -3117,7 +3173,10 @@ async function planPlaces(placeIds, mode, fixedLLs = [], starR = 50) {
     if (!place.center) return { ok: false, msg: many ? `Für Ort ${pid} ist noch keine Ortschaft gewählt: Ort ${pid} in der Liste antippen und suchen oder auf der Karte tippen.` : 'Bitte zuerst eine Ortschaft wählen oder auf der Karte tippen.' };
     let G;
     try { G = await graphFor(place, place.radius); }
-    catch { return { ok: false, msg: 'OpenStreetMap ist gerade nicht erreichbar oder überlastet. Bitte in einer Minute noch einmal versuchen.' }; }
+    catch (e) {
+      const part = e && e.tilesTotal ? ` ${e.tilesOk} von ${e.tilesTotal} Bereichen sind geladen und gespeichert; ein neuer Versuch lädt nur noch den Rest.` : '';
+      return { ok: false, msg: `OpenStreetMap ist gerade nicht erreichbar oder überlastet.${part} Bitte in einer Minute noch einmal versuchen.` };
+    }
     if (search.stop) return CANCELLED;
     if (!G.settlementAreas) noAreas = true;
     const opt = { terrain: place.terrain, allowPaths: $('#allowPaths').checked, avoidLoops: $('#avoidLoops').checked, strict: $('#strictTurns').checked };

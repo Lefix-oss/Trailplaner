@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
 import { Planner, Pruefung } from './load.mjs';
 
 test('parseNames trimmt, ignoriert Leerzeilen und Dubletten', () => {
@@ -130,6 +131,45 @@ test('shareText listet Start- bzw. Endpunkte mit Stufe, VP und Team', () => {
   assert.equal(Pruefung.shareText(ex, 'start', link),
     'Startpunkte Prüfung Musterdorf\n\nTrail 1 (MT-I) – VP: VP1 – Team: Anna mit Luna\nL(49.1,9.1)\n\nTrail 2 (MT-II)\nL(49.3,9.3)');
   assert.ok(Pruefung.shareText(ex, 'end', link).startsWith('Endpunkte Prüfung Musterdorf\n\nTrail 1 (MT-I) – VP: VP1 – Team: Anna mit Luna\nL(49.2,9.2)'));
+});
+
+test('osmTiles: Kacheln decken den Suchkreis ab, nur berührende Kacheln, wenige Abfragen', () => {
+  const c = { lat: 49.6536, lon: 9.9445 };
+  for (const r of [300, 1200, 5000]) {
+    const t = Pruefung.osmTiles(c, r);
+    const kx = 111320 * Math.cos(c.lat * Math.PI / 180), ky = 110574;
+    // Punkte auf und im Kreis (bis Radius + 50 m) liegen in einer Kachel
+    for (let a = 0; a < 360; a += 15) for (const f of [0, 0.5, 1]) {
+      const lat = c.lat + Math.sin(a * Math.PI / 180) * (r + 49) * f / ky, lon = c.lon + Math.cos(a * Math.PI / 180) * (r + 49) * f / kx;
+      assert.ok(t.some(x => lat >= x.bbox[0] && lat <= x.bbox[2] && lon >= x.bbox[1] && lon <= x.bbox[3]), `r ${r}: Punkt ${a}° nicht abgedeckt`);
+    }
+    assert.equal(new Set(t.map(x => x.key)).size, t.length);
+  }
+  assert.ok(Pruefung.osmTiles(c, 1200).length <= 6);
+  assert.ok(Pruefung.osmTiles(c, 5000).length <= 36);
+});
+
+test('osmTiles: neuer Radius oder leicht versetzte Mitte nutzt die vorhandenen Kacheln weiter', () => {
+  const c = { lat: 49.6536, lon: 9.9445 }, keys = (cc, r) => new Set(Pruefung.osmTiles(cc, r).map(x => x.key));
+  const a = keys(c, 1200), b = keys(c, 1300), m = keys({ lat: c.lat + 0.0003, lon: c.lon + 0.0004 }, 1200);
+  assert.ok([...a].every(k => b.has(k)), 'größerer Radius enthält alle bisherigen Kacheln');
+  assert.ok([...m].filter(k => a.has(k)).length >= a.size - 1, 'leicht versetzt: fast alle Kacheln gleich');
+});
+
+test('mergeOSM: Kacheln zusammengeführt ergeben dasselbe Wegenetz wie eine Gesamtabfrage', () => {
+  const osm = JSON.parse(readFileSync(new URL('../data/osm/giebelstadt-essfeld.json', import.meta.url), 'utf8'));
+  const c = { lat: 49.6536, lon: 9.9445 }, tiles = Pruefung.osmTiles(c, 1200);
+  // jede Kachel liefert alle Elemente, deren Geometrie sie berührt (wie Overpass mit „out geom“)
+  const hits = (el, b) => (el.geometry || (el.lat ? [{ lat: el.lat, lon: el.lon }] : [])).some(g => g && g.lat >= b[0] && g.lat <= b[2] && g.lon >= b[1] && g.lon <= b[3])
+    || (el.members || []).some(m => (m.geometry || []).some(g => g && g.lat >= b[0] && g.lat <= b[2] && g.lon >= b[1] && g.lon <= b[3]));
+  const parts = tiles.map(t => ({ elements: osm.elements.filter(el => hits(el, t.bbox)) }));
+  const merged = Pruefung.mergeOSM(parts);
+  assert.ok(parts.reduce((s, p) => s + p.elements.length, 0) > merged.elements.length, 'Überlappungen werden entfernt');
+  assert.equal(new Set(merged.elements.map(e => e.type + e.id)).size, merged.elements.length);
+  const box = Pruefung.osmBBox(c, 1200), whole = { elements: osm.elements.filter(el => hits(el, box)) };
+  const G1 = Planner.buildGraph(whole, c, 1200), G2 = Planner.buildGraph(merged, c, 1200);
+  assert.equal(G2.segs.length, G1.segs.length);
+  assert.equal(G2.parkings.length, G1.parkings.length);
 });
 
 test('osmKey: gleicher Ort (auf ca. 10 m) und Radius ergeben denselben Schlüssel', () => {
