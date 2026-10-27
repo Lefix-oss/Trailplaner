@@ -130,6 +130,9 @@ button.small { font-size: 13px; padding: 7px 10px; }
 .place-name.empty { color: var(--muted); font-style: italic; }
 .place select { padding: 5px 6px; font-size: 13px; width: auto; }
 .place-opts { grid-column: 2 / -1; display: flex; flex-wrap: wrap; gap: 6px; }
+.radius { flex: 1 1 100%; display: flex; align-items: center; gap: 8px; font-size: 13px; color: var(--muted); cursor: default; }
+.radius input { flex: 1; min-width: 0; width: auto; padding: 0; border: 0; accent-color: var(--accent); height: 28px; }
+.radius-val { min-width: 4.2em; text-align: right; font-weight: 600; color: var(--ink); }
 .place .replan { grid-column: 2 / -1; justify-self: start; }
 .team select.team-place { width: auto; padding: 5px 6px; font-size: 13px; }
 .pin { width: 10px; height: 10px; border-radius: 50%; background: var(--accent); flex: none; }
@@ -2194,14 +2197,15 @@ const store = {
 const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946], contact: 'Felix Schuck, Obere Steigstr. 14, 97276 Margetshöchheim' };
 $('#privacyWho').textContent = CLUB.name + (CLUB.contact ? ', Kontakt: ' + CLUB.contact : '');
 // Versionsnummer: jede Änderung zählt um 0.1 hoch (V1.0 … V1.9, dann V2.0 …); Änderungen stehen in CHANGELOG.md
-const APP_VERSION = '3.2';
+const APP_VERSION = '3.3';
 document.getElementById('appVersion').textContent = 'V' + APP_VERSION;
 const saved = store.get();
 function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }
 // Orte A, B, … mit eigenem Gelände; alter Speicherstand (ein Ort) wird zu Ort A
 const PLACE_COLORS = { A: '#e8590c', B: '#1c7ed6', C: '#2f9e44', D: '#7048e8' };
 const TERRAIN_LABELS = { ort: 'Nur im Ort', mix: 'Ort und Ortsrand', frei: 'Auch Feld und Wald' };
-const RADII = [400, 600, 800, 1200, 1600, 2200];
+const RADII = [400, 600, 800, 1200, 1600, 2200];   // Stufen für die automatische Ortserkennung beim GPX-Import
+const RADIUS_MIN = 300, RADIUS_MAX = 2500, RADIUS_STEP = 100;   // Schieberegler Suchgebiet
 const radiusLabel = r => (r < 1000 ? `${r} m` : `${String(r / 1000).replace('.', ',')} km`);
 const blankPlace = id => ({ id, name: '', center: null, terrain: 'ort', radius: 1200 });
 function initialPlaces() {
@@ -2350,14 +2354,18 @@ function renderPlaces() {
     for (const [v, l] of Object.entries(TERRAIN_LABELS)) { const o = document.createElement('option'); o.value = v; o.textContent = l; sel.append(o); }
     sel.value = p.terrain || 'ort';
     sel.onchange = () => { p.terrain = sel.value; invalidate(); persist(); };
-    const rs = document.createElement('select'); rs.setAttribute('aria-label', `Suchgebiet Ort ${p.id}`); rs.title = 'Suchgebiet: Radius um die Ortsmitte';
-    for (const r of RADII) { const o = document.createElement('option'); o.value = r; o.textContent = radiusLabel(r); rs.append(o); }
-    rs.value = p.radius;
-    rs.onchange = () => { p.radius = +rs.value; invalidate(); drawArea(); persist(); };
+    // Suchgebiet per Schieberegler: Kreis folgt beim Ziehen, gespeichert wird beim Loslassen
+    const rs = document.createElement('label'); rs.className = 'radius'; rs.title = 'Suchgebiet: Radius um die Ortsmitte';
+    const rIn = document.createElement('input'); rIn.type = 'range'; rIn.min = RADIUS_MIN; rIn.max = RADIUS_MAX; rIn.step = RADIUS_STEP;
+    rIn.value = p.radius; rIn.setAttribute('aria-label', `Suchgebiet Ort ${p.id}`);
+    const rOut = document.createElement('span'); rOut.className = 'radius-val'; rOut.textContent = radiusLabel(p.radius);
+    rIn.oninput = () => { p.radius = +rIn.value; rOut.textContent = radiusLabel(p.radius); drawArea(); };
+    rIn.onchange = () => { p.radius = +rIn.value; invalidate(); drawArea(); persist(); };
+    rs.append('Suchgebiet ', rIn, rOut);
     const x = document.createElement('button'); x.type = 'button'; x.className = 'x'; x.textContent = '✕'; x.disabled = !many; x.setAttribute('aria-label', `Ort ${p.id} entfernen`);
     x.onclick = () => removePlace(p.id);
     row.onclick = e => {
-      if (e.target.closest('select, button')) return;
+      if (e.target.closest('select, button, .radius')) return;
       state.activePlace = p.id; renderPlaces(); drawArea(); persist();
       if (p.center) map.flyTo([p.center.lat, p.center.lon], 15, { duration: 0.6 });
     };
