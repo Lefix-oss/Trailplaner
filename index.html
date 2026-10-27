@@ -441,9 +441,9 @@ const Planner = (() => {
   const LENGTH_TOL = 0.10;        // "ca." – ±10 %
   const TURN_ANGLE = 40;          // ab dieser Abweichung zählt ein Abbiegen als Richtungswechsel
   const PICKUP_MAX = 30;          // Ende max. 30 m von einer befahrbaren Straße
-  const SAMPLE_STEP = 8;
-  const MIN_DECISION_GAP = 15;
-  const SHORTCUT_RATIO = 0.5;      // Luftlinie mind. halb so lang wie der Trail dazwischen    // zwei Entscheidungsstellen mindestens 25 m auseinander          // Abtastung für Abstandsprüfung zwischen Trails
+  const SAMPLE_STEP = 8;          // Abtastung für Abstandsprüfung zwischen Trails
+  const MIN_DECISION_GAP = 15;    // zwei Entscheidungsstellen (und Start → erste) mind. 15 m auseinander; Planervorgabe ungeklärter Herkunft, keine PO-Regel
+  const SHORTCUT_RATIO = 0.5;     // Luftlinie mind. halb so lang wie der Trail dazwischen
 
   // ---------- Wegeklassen aus OpenStreetMap ----------
   const QUIET = new Set(['residential', 'living_street', 'service', 'pedestrian', 'footway', 'path', 'track', 'cycleway', 'bridleway']);
@@ -1233,7 +1233,8 @@ const Planner = (() => {
     G._starts = {}; G._startTotal = {};
     for (const k of Object.keys(LEVELS)) {
       const lv = LEVELS[k];
-      G._starts[k] = G.segs.filter(s => segOk(G, lv, s) && s.len >= 40 && s.a !== s.b && s.inside >= TERRAIN[G.terrain || 'ort']);
+      // Startstücke ab 40 m; für die automatische Prüfungskette ab 20 m (V3.7, der Abstand bis zur ersten Entscheidungsstelle wird eigens geprüft)
+      G._starts[k] = G.segs.filter(s => segOk(G, lv, s) && s.len >= (G.chainRules ? 20 : 40) && s.a !== s.b && s.inside >= TERRAIN[G.terrain || 'ort']);
       G._startTotal[k] = G._starts[k].reduce((a, s) => a + s.len, 0);
     }
   }
@@ -1347,7 +1348,13 @@ const Planner = (() => {
       if (caps.noStraight && deg >= 3 && !isTurn) continue;
       const t2 = turns + (isTurn ? 1 : 0);
       if (t2 > caps.maxTurns) continue;
-      if (acc + s.len >= target) {
+      if (G.chainRules && acc + s.len >= target * 0.94) {
+        // Prüfungskette (V3.7): Ende auch bei −6 % oder +6 % (Planertoleranz ±10 %, keine belegte PO-Toleranz); Solllänge zuerst
+        if (t2 >= lvl.minTurns) for (const L of [1, 0.94, 1.06].map(x => target * x)) {
+          if (L > acc && L <= acc + s.len && L - ld >= MIN_DECISION_GAP) yield { level: lvl.key, legs: legs.concat([{ seg: id, fwd: f, d0: 0, d1: L - acc }]), length: L };
+        }
+        if (acc + s.len >= target * 1.06) continue;
+      } else if (acc + s.len >= target) {
         if (t2 < lvl.minTurns || target - ld < MIN_DECISION_GAP) continue;
         yield { level: lvl.key, legs: legs.concat([{ seg: id, fwd: f, d0: 0, d1: target - acc }]), length: target };
         continue;
@@ -1687,7 +1694,10 @@ const Planner = (() => {
   }
   const legRange = (s, l) => (l.fwd ? [l.d0, l.d1] : [s.len - l.d1, s.len - l.d0]);   // Bein in Metern des Segments (ab s.a)
   // Sperre eines noch nicht gelaufenen Trails; used: Kanten, die er laut Zuordnung benutzt
-  function transitBlocks(G, W, c) {
+  // Sperren je Trail einmal berechnen (die Kettensuche fragt denselben Trail sehr oft ab)
+  const TB_CACHE = new WeakMap();
+  function transitBlocks(G, W, c) { let r = TB_CACHE.get(c); if (!r) { r = transitBlocks0(G, W, c); TB_CACHE.set(c, r); } return r; }
+  function transitBlocks0(G, W, c) {
     const base = edgeIndex(G), out = new Set(), used = new Set(), nodes = new Set();
     for (const l of (c.tr && c.tr.legs) || []) {
       const s = G.segs[l.seg], [a, b] = legRange(s, l);
@@ -1935,11 +1945,220 @@ const Planner = (() => {
     return hit >= smp.length * share;
   }
 
+  // ---------- Prüfungskette mit Rechenbudget (V3.7) ----------
+  // Ablauf: bisherige Suche (Vorräte + chain) als Startlösung → Übergänge nach der Regel des GPX-Imports (spätere Trails nicht
+  // kreuzen, berühren oder benutzen, Zugang über das Startstück des nächsten Trails), aber wie bisher 75–250 m Fußweg und
+  // ≥ 75 m Luftlinie → unabhängige Prüfung → alle Trails im 10-m-Startraster (soweit das Budget reicht), zusammengeführt mit den
+  // Kandidaten der bisherigen Suche (gleiche Wegfolge = derselbe Kandidat, keine Ähnlichkeitsfilter) → gezielte Verbesserung mit
+  // der Startlösung als Schranke. Bewertung: 1. Lücken 2. zusätzliche Entscheidungsstellen/Richtungswechsel 3. Summe der Übergänge
+  // 4. Abweichung von der Solllänge. Gemeldet und übernommen wird nur, was die abschließende Prüfung besteht.
+  const CHAIN = { minLen: 75, maxLen: 250, minAir: 75, touch: 3, step: 10 };
+  const legKey = tr => tr.legs.map(l => `${l.seg}${l.fwd ? '+' : '-'}${Math.round(l.d0)}:${Math.round(l.d1)}`).join(',');
+  // Abstand vom Start bis zur ersten Entscheidungsstelle (Knoten mit ≥ 3 Wegen) entlang des Trails
+  function firstDecision(G, tr) {
+    let acc = 0;
+    for (let i = 0; i < tr.legs.length; i++) {
+      const l = tr.legs[i], s = G.segs[l.seg]; acc += l.d1 - l.d0;
+      if (i + 1 < tr.legs.length && G.deg(l.fwd ? s.b : s.a) >= 3) return acc;
+    }
+    return Infinity;
+  }
+  function lineDist(a, b) { let m = Infinity; for (let i = 1; i < a.length; i++) for (let j = 1; j < b.length; j++) { const x = segSegDist(a[i - 1], a[i], b[j - 1], b[j]); if (x < m) m = x; } return m; }
+  function densify(pts, step = 1) { const o = [pts[0]]; for (let i = 1; i < pts.length; i++) { const k = Math.max(1, Math.ceil(dist(pts[i - 1], pts[i]) / step)); for (let j = 1; j <= k; j++) o.push([pts[i - 1][0] + (pts[i][0] - pts[i - 1][0]) * j / k, pts[i - 1][1] + (pts[i][1] - pts[i - 1][1]) * j / k]); } return o; }
+  // Kandidat aus einer Wegfolge (neu geprüft); null, wenn er die PO-Prüfung oder den Abstand bis zur ersten Entscheidung nicht besteht
+  function chainCand(G, tr, pid) {
+    tr = { level: tr.level, length: tr.length, legs: tr.legs, mode: 'pruefung' };
+    const v = validate(G, tr);
+    if (!v.ok || firstDecision(G, tr) < MIN_DECISION_GAP) return null;
+    const segSet = new Set(tr.legs.map(l => l.seg)), nodeSet = new Set();
+    tr.legs.forEach(l => G.segs[l.seg].nodes.forEach(n => nodeSet.add(n)));
+    const smp = samples(v.pts), xs = smp.map(p => p[0]), ys = smp.map(p => p[1]), key = legKey(tr);
+    return { id: (pid ? pid + ':' : '') + key, key, place: pid, tr, v, segSet, nodeSet, samples: smp, excess: v.excess,
+      bbox: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], score: 0 };
+  }
+  // Fußweg a → b nach der Kettenregel; later: bereits bekannte später gelaufene Trails
+  function chainLink(G, W, a, b, later) {
+    const end = a.v.pts[a.v.pts.length - 1];
+    if (dist(end, b.v.pts[0]) < CHAIN.minAir) return null;
+    const r = transitPath(G, W, end, b, later, { max: CHAIN.maxLen });
+    return r && r.dist !== null && r.dist >= CHAIN.minLen && r.dist <= CHAIN.maxLen ? { dist: r.dist, pts: r.pts } : null;
+  }
+  // Unabhängige Prüfung einer fertigen Kette (eigene Geometrie): PO je Trail, Start → erste Entscheidung, Abstände der Trails,
+  // Übergänge (75–250 m, Luftlinie ≥ 75 m, beginnt am Ziel und endet am Start), Übergang berührt keinen späteren Trail und vom
+  // nächsten Trail höchstens das Startstück. Ergebnis: Liste der Verstöße (leer = gültig)
+  function checkChain(G, order, links, levels, minDist) {
+    const errs = [];
+    if (!order || order.length !== levels.length) return ['unvollständig'];
+    const lines = order.map((c, i) => {
+      const v = validate(G, { ...c.tr, mode: 'pruefung' });
+      if (!v.ok) errs.push(`Trail ${i + 1}: PO-Prüfung nicht bestanden`);
+      if (c.tr.level !== levels[i]) errs.push(`Trail ${i + 1}: falsche Stufe`);
+      if (firstDecision(G, c.tr) < MIN_DECISION_GAP - 0.5) errs.push(`Trail ${i + 1}: erste Entscheidungsstelle zu nah am Start`);
+      return v.pts;
+    });
+    for (let i = 0; i < lines.length; i++) for (let j = i + 1; j < lines.length; j++) if (lineDist(lines[i], lines[j]) < minDist) errs.push(`Trail ${i + 1}/${j + 1}: Abstand unter ${minDist} m`);
+    for (let k = 1; k < order.length; k++) {
+      const w = links[k]; if (!w) continue;
+      const len = polyLen(w.pts), end = lines[k - 1][lines[k - 1].length - 1], st = lines[k][0];
+      if (len < CHAIN.minLen - 1 || len > CHAIN.maxLen + 1) errs.push(`Übergang ${k}: ${Math.round(len)} m`);
+      if (dist(end, st) < CHAIN.minAir - 0.5) errs.push(`Übergang ${k}: Luftlinie ${Math.round(dist(end, st))} m`);
+      if (dist(w.pts[0], end) > 15 || dist(w.pts[w.pts.length - 1], st) > 15) errs.push(`Übergang ${k}: beginnt/endet nicht an Ziel/Start`);
+      for (let j = k + 1; j < order.length; j++) if (lineDist(w.pts, lines[j]) < CHAIN.touch - 0.5) errs.push(`Übergang ${k} berührt späteren Trail ${j + 1}`);
+      const first = order[k].tr.legs[0], firstLen = first.d1 - first.d0, q = densify(lines[k]), rest = [];
+      for (let i = 0, acc = 0; i < q.length; i++) { if (i) acc += dist(q[i - 1], q[i]); if (acc > firstLen + 4) rest.push(q[i]); }
+      if (rest.length > 1 && lineDist(w.pts, rest) < CHAIN.touch - 0.5) errs.push(`Übergang ${k} berührt Trail ${k + 1} außerhalb des Startstücks`);
+    }
+    return errs;
+  }
+  // Exakte Suche über Auswahl und Reihenfolge mit Zeitgrenze; incumbent = geprüfte Startkette (gleiche Bewertung)
+  function chainImprove(G, W, teams, pools, minDist, { limitMs, incumbent, onImprove }) {
+    const t0 = Date.now(), dev = c => Math.abs(c.v.length - LEVELS[c.tr.level].length);
+    const seq = teams.map((t, i) => ({ t, i })).sort((a, b) => LEVEL_ORDER.indexOf(a.t.level) - LEVEL_ORDER.indexOf(b.t.level) || a.i - b.i);
+    const n = seq.length, cmp = (a, b) => a.excess - b.excess || dev(a) - dev(b) || (a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
+    const lists = {}; for (const lv of Object.keys(pools)) lists[lv] = pools[lv].slice().sort(cmp);
+    const bySeg = {};
+    for (const lv of Object.keys(lists)) { bySeg[lv] = new Map(); for (const c of lists[lv]) { const s = c.tr.legs[0].seg; if (!bySeg[lv].has(s)) bySeg[lv].set(s, []); bySeg[lv].get(s).push(c); } }
+    const nodeSegs = new Map();
+    for (const sg of G.segs) for (const nd of sg.nodes) { if (!nodeSegs.has(nd)) nodeSegs.set(nd, new Set()); nodeSegs.get(nd).add(sg.id); }
+    const reachMemo = new Map();
+    const reach = c => {   // Wegstücke in 250 m Fußweg vom Ziel (ohne Sperren, nur Vorfilter)
+      if (reachMemo.has(c)) return reachMemo.get(c);
+      const s0 = snapEdge(W, c.v.pts[c.v.pts.length - 1]), segs = new Set();
+      if (s0) {
+        const D = new Map(), open = new Map([[s0.e.a, s0.t * s0.e.len], [s0.e.b, (1 - s0.t) * s0.e.len]]);
+        while (open.size) {
+          let u = null, du = Infinity; for (const [k, d] of open) if (d < du) { du = d; u = k; }
+          open.delete(u); if (du > CHAIN.maxLen) break; D.set(u, du);
+          for (const id of nodeSegs.get(u) || []) segs.add(id);
+          for (const e of W.nb.get(u) || []) { const v = e.a === u ? e.b : e.a, dv = du + e.len; if (!D.has(v) && dv <= CHAIN.maxLen && (!open.has(v) || dv < open.get(v))) open.set(v, dv); }
+        }
+      }
+      reachMemo.set(c, segs); return segs;
+    };
+    let ids = 0; const cid = new Map(), id = c => { if (!cid.has(c)) cid.set(c, ++ids); return cid.get(c); };
+    const linkMemo = new Map(), compatMemo = new Map();
+    const link = (a, b, later = []) => { const k = id(a) + '>' + id(b) + '|' + later.map(id).join(','); if (!linkMemo.has(k)) linkMemo.set(k, chainLink(G, W, a, b, later)); return linkMemo.get(k); };
+    const ok = (a, b) => { const k = Math.min(id(a), id(b)) + '|' + Math.max(id(a), id(b)); if (!compatMemo.has(k)) compatMemo.set(k, compatible(a, b, minDist)); return compatMemo.get(k); };
+    const near = (w, c) => { for (let i = 1; i < w.pts.length; i++) for (let j = 1; j < c.v.pts.length; j++) if (segSegDist(w.pts[i - 1], w.pts[i], c.v.pts[j - 1], c.v.pts[j]) < CHAIN.touch + 2) return true; return false; };
+    const chosen = []; let walks = [];
+    const walksWith = c => {   // frühere Fußwege mit dem neuen späteren Trail c erneut prüfen (ggf. anderer Weg um c herum)
+      const out = walks.slice();
+      for (let i = 1; i < walks.length; i++) {
+        if (!walks[i] || !near(walks[i], c)) continue;
+        const w = link(chosen[i - 1], chosen[i], chosen.slice(i + 1).concat([c]));
+        if (!w) return null; out[i] = w;
+      }
+      return out;
+    };
+    const exPre = {}; for (const lv of Object.keys(lists)) { exPre[lv] = [0]; lists[lv].forEach((c, i) => exPre[lv].push(exPre[lv][i] + c.excess)); }
+    const restE = seq.map((_, k) => { const cnt = {}; for (const x of seq.slice(k)) cnt[x.t.level] = (cnt[x.t.level] || 0) + 1; let e = 0; for (const [lv, m] of Object.entries(cnt)) { if (lists[lv].length < m) return Infinity; e += exPre[lv][m]; } return e; });
+    const less = (a, b) => { for (let i = 0; i < a.length; i++) { if (a[i] < b[i] - 1e-9) return true; if (a[i] > b[i] + 1e-9) return false; } return false; };
+    const tupleOf = (order, links) => [links.filter((w, i) => i > 0 && !w).length, order.reduce((s, c) => s + c.excess, 0), links.reduce((s, w) => s + (w ? w.dist : 0), 0), order.reduce((s, c) => s + dev(c), 0)];
+    let best = incumbent ? { t: tupleOf(incumbent.order, incumbent.links), order: incumbent.order, links: incumbent.links } : null, nodes = 0, stopped = false;
+    (function dfs(k, gaps, E, D) {
+      if (stopped) return;
+      if ((++nodes & 127) === 0 && Date.now() - t0 > limitMs) { stopped = true; return; }
+      if (k === n) {
+        const Ws = walks.reduce((s, x) => s + (x ? x.dist : 0), 0), t = [gaps, E, Ws, D];
+        if (!best || less(t, best.t)) { const cand = { t, order: chosen.slice(), links: walks.slice() }; if (onImprove(cand)) best = cand; }
+        return;
+      }
+      const lv = seq[k].t.level, list = lists[lv] || [], rem = n - k - 1, Wnow = walks.reduce((s, x) => s + (x ? x.dist : 0), 0);
+      const bound = (g, e, w) => !best || less([g, e + (k + 1 < n ? restE[k + 1] : 0), g === best.t[0] ? w + rem * CHAIN.minLen : w, 0], best.t);
+      const free = c => !chosen.includes(c) && chosen.every(o => ok(c, o));
+      const step = (c, w, g) => { const nw = walksWith(c); if (!nw) return; const saved = walks; walks = nw.concat([w]); chosen.push(c); dfs(k + 1, g, E + c.excess, D + dev(c)); chosen.pop(); walks = saved; };
+      if (k === 0) { for (const c of list) { if (!bound(0, c.excess, 0)) break; if (free(c)) step(c, null, 0); if (stopped) return; } return; }
+      const prev = chosen[k - 1], opts = [];
+      for (const s of reach(prev)) for (const c of bySeg[lv].get(s) || []) opts.push(c);
+      opts.sort(cmp);
+      const linked = [];
+      for (const c of opts) { if (!bound(gaps, E + c.excess, Wnow + CHAIN.minLen)) break; if (!free(c)) continue; const w = link(prev, c); if (w) linked.push({ c, w }); }
+      linked.sort((a, b) => a.c.excess - b.c.excess || a.w.dist - b.w.dist);
+      for (const { c, w } of linked) { if (!bound(gaps, E + c.excess, Wnow + w.dist)) continue; step(c, w, gaps); if (stopped) return; }
+      for (const c of list) { if (!bound(gaps + 1, E + c.excess, Wnow)) break; if (free(c)) step(c, null, gaps + 1); if (stopped) return; }
+    })(0, 0, 0, 0);
+    return { best, stopped, seq };
+  }
+  // Ein Ort, Prüfungskette mit Rechenbudget a.budgetMs. onBest(chainResult): jede geprüfte bessere Kette (für den Abbruch)
+  function chainSearch(G, a, progress, onBest) {
+    const T0 = Date.now(), now = () => Date.now() - T0, label = a.label || '';
+    const reserve = Math.max(1500, a.budgetMs * 0.08), deadline = a.budgetMs - reserve;
+    const R = rng(a.seed), obstacles = a.obstacles || [], minDist = a.minDist, pools = {}, notes = [];
+    const W = G._walk || (G._walk = walkGraph(G));
+    const levelsInOrder = a.teams.map(t => t.level).sort((x, y) => LEVEL_ORDER.indexOf(x) - LEVEL_ORDER.indexOf(y));
+    const seqIndex = a.teams.map((t, i) => ({ t, i })).sort((x, y) => LEVEL_ORDER.indexOf(x.t.level) - LEVEL_ORDER.indexOf(y.t.level) || x.i - y.i).map(x => x.i);
+    const freeOf = c => obstacles.every(o => compatible(c, o, minDist));
+    let best = null;
+    const summary = b => `${b.gaps} Lücke${b.gaps === 1 ? '' : 'n'}, ${b.excess} zusätzliche Stelle${b.excess === 1 ? '' : 'n'}`;
+    const offer = (order, links) => {
+      if (checkChain(G, order, links, levelsInOrder, minDist).length) return false;
+      best = { order, links, gaps: links.filter((w, i) => i > 0 && !w).length, excess: order.reduce((s, c) => s + c.excess, 0), index: seqIndex, teams: seqIndex.map(i => a.teams[i]) };
+      onBest(best);
+      progress(`${label}Suche bessere Kette (Budget ${Math.round(a.budgetMs / 1000)} s) – beste bisher: ${summary(best)} …`);
+      return true;
+    };
+    // 1. Startlösung: bisherige Suche
+    for (const lv of a.levels) {
+      progress(`${label}Würfle ${lv}-Trails und prüfe sie gegen die PO …`);
+      const p = pool(G, lv, R, { want: 45, maxTries: 10000, mode: 'pruefung' });
+      if (a.pid) p.list.forEach(c => { c.place = a.pid; c.id = a.pid + ':' + c.id; });
+      p.list = p.list.filter(freeOf);
+      pools[lv] = p;
+    }
+    progress(`${label}Reihe die Trails zu einer Kette …`);
+    const old = chain(G, W, a.teams, pools, R, minDist, { obstacles });
+    let start = null;
+    if (old.order.length === a.teams.length) {
+      const order = old.order.map(c => chainCand(G, c.tr, a.pid));
+      if (order.every(Boolean)) {
+        const links = order.map((c, k) => (k ? chainLink(G, W, order[k - 1], c, order.slice(k + 1)) : null));
+        if (offer(order, links)) start = { order, links };
+      }
+    }
+    // 2. Alle Trails im 10-m-Startraster, solange das Budget reicht; zusammengeführt mit den Kandidaten der bisherigen Suche
+    const merged = {}, enumEnd = Math.max(now() + (deadline - now()) * 0.6, a.budgetMs * 0.55);
+    const levels = [...new Set(a.levels)];
+    levels.forEach((lv, i) => {
+      const map = new Map();
+      for (const c of [...pools[lv].list, ...old.order.filter(c => c.tr.level === lv)]) { const x = chainCand(G, c.tr, a.pid); if (x && freeOf(x)) map.set(x.key, x); }
+      const share = (enumEnd - now()) / (levels.length - i);
+      if (share > 200) {
+        progress(`${label}Prüfe weitere ${lv}-Trails (Budget ${Math.round(a.budgetMs / 1000)} s) …`);
+        const lvl = LEVELS[lv], t1 = Date.now(); let k = 0, cut = false;
+        for (const caps of G.strict ? [targetCaps(lvl, 'pruefung')] : [targetCaps(lvl, 'pruefung'), RELAXED(lvl)]) {
+          for (const tr of systematic(G, lvl, caps, R, { steps: 1e15 })) {
+            if ((++k & 255) === 0 && Date.now() - t1 > share) { cut = true; break; }
+            const key = legKey(tr); if (map.has(key)) continue;
+            const x = chainCand(G, tr, a.pid); if (x && freeOf(x)) map.set(key, x);
+          }
+          if (cut) break;
+        }
+        if (cut) notes.push(`${lv}: Raster im Budget nicht vollständig`);
+      } else notes.push(`${lv}: kein Budget für das Raster`);
+      merged[lv] = [...map.values()];
+    });
+    // 3. Verbesserung; jede bessere Kette wird sofort unabhängig geprüft
+    progress(`${label}Suche bessere Kette (Budget ${Math.round(a.budgetMs / 1000)} s)${best ? ' – beste bisher: ' + summary(best) : ''} …`);
+    const r = chainImprove(G, W, a.teams, merged, minDist, { limitMs: Math.max(0, deadline - now()), incumbent: start, onImprove: cand => offer(cand.order, cand.links) });
+    const result = best ? { order: best.order, links: best.links, gaps: best.gaps, teams: best.teams, index: best.index } : { order: [], links: [], gaps: 0, teams: [], index: [] };
+    // Ohne geprüfte Kette: wie bisher planen (jeder Übergang eine Lücke)
+    if (!best) {
+      const p = plans(G, a.teams, pools, R, minDist, 1);
+      if (p.plans.length) Object.assign(result, { order: p.plans[0], links: new Array(a.teams.length).fill(null), gaps: a.teams.length - 1, teams: a.teams, index: a.teams.map((_, i) => i) });
+      notes.push('keine geprüfte Kette gefunden');
+    }
+    return { pools, chain: result, status: best ? 'beste im Budget gefundene Lösung' : 'keine geprüfte Kette', notes, ms: now() };
+  }
+
   // ---------- Suche für einen Ort (läuft im Web Worker oder, falls der nicht startet, auf der Seite) ----------
   // Je Stufe einen Vorrat würfeln, dann die Kette (Prüfung) oder den Tagesplan (Training) bilden.
   // Ein- und Ausgabe sind reine Daten; die Trails beziehen sich auf Wegnummern, die bei gleichen OSM-Daten überall gleich sind.
-  function planPlace(G, a, progress = () => {}) {
+  function planPlace(G, a, progress = () => {}, onBest = () => {}) {
+    // Kettenregeln (V3.7) nur für die automatische Prüfungskette mit Rechenbudget; alles andere wie bisher
+    const useChain = a.mode === 'pruefung' && a.budgetMs > 0 && !a.poolsOnly;
+    G.chainRules = useChain;
     setTerrain(G, a.terrain, a.allowPaths, a.avoidLoops, a.strict);
+    if (useChain) return chainSearch(G, a, progress, onBest);
     const R = rng(a.seed), obstacles = a.obstacles || [], pools = {};
     if (a.star && a.mode === 'training' && !a.poolsOnly) return star(G, a, R, obstacles, progress);
     for (const lv of a.levels) {
@@ -1972,7 +2191,7 @@ const Planner = (() => {
         const G = graphs.get(m.key);
         if (!G) { scope.postMessage({ id: m.id, missing: true }); return; }
         graphs.delete(m.key); graphs.set(m.key, G);   // zuletzt benutzt nach hinten
-        const result = planPlace(G, m.args, text => scope.postMessage({ id: m.id, progress: text }));
+        const result = planPlace(G, m.args, text => scope.postMessage({ id: m.id, progress: text }), best => scope.postMessage({ id: m.id, best }));
         scope.postMessage({ id: m.id, result });
       } catch (err) { scope.postMessage({ id: m.id, error: String((err && err.message) || err) }); }
     };
@@ -1986,7 +2205,7 @@ const Planner = (() => {
     if (s.blocked) return false;
     return true;
   }
-  return { LEVELS, buildGraph, buildLand, terrainShares, prepare, setTerrain, pool, plans, planPlace, workerMain, alternatives, walkGraph, blockedEdges, walkPath, chain, replacement, reverseTrail, similar, snapEdge, validate, describe, endpointNames, toGPX, rng, trailPts, compatible, levelByLength, matchTrack, trackCandidate, orderFixed, transitPath };
+  return { LEVELS, buildGraph, buildLand, terrainShares, prepare, setTerrain, pool, plans, planPlace, workerMain, checkChain, chainLink, firstDecision, CHAIN, alternatives, walkGraph, blockedEdges, walkPath, chain, replacement, reverseTrail, similar, snapEdge, validate, describe, endpointNames, toGPX, rng, trailPts, compatible, levelByLength, matchTrack, trackCandidate, orderFixed, transitPath };
 })();
 if (typeof module !== 'undefined') module.exports = Planner;
 
@@ -2326,7 +2545,7 @@ const store = {
 const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946], contact: 'Felix Schuck, Obere Steigstr. 14, 97276 Margetshöchheim' };
 $('#privacyWho').textContent = CLUB.name + (CLUB.contact ? ', Kontakt: ' + CLUB.contact : '');
 // Versionsnummer: jede Änderung zählt um 0.1 hoch (V1.0 … V1.9, dann V2.0 …); Änderungen stehen in CHANGELOG.md
-const APP_VERSION = '3.6';
+const APP_VERSION = '3.7';
 document.getElementById('appVersion').textContent = 'V' + APP_VERSION;
 const saved = store.get();
 function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }
@@ -2768,6 +2987,7 @@ function workerMessage(m) {
   const j = search.job;
   if (!j || m.id !== j.id) return;
   if (m.progress) { j.stage = m.progress; showSearchStatus(); return; }
+  if (m.best) { j.best = m.best; return; }   // Prüfungskette: zuletzt geprüfte beste Kette (bleibt bei Abbruch erhalten)
   if (m.missing && !j.resent) { j.resent = true; j.send(true); return; }
   search.job = null;
   if (m.result) { search.has.add(j.key); j.resolve(m.result); }
@@ -2780,7 +3000,7 @@ async function directPlace(G, args) {
 // Sucht für einen Ort; Ergebnis wie Planner.planPlace. Wirft { cancelled: true } bei „Abbrechen“.
 function searchPlace(G, args) {
   const w = plannerWorker(), src = graphSrc.get(G);
-  if (!w || !src) return directPlace(G, args);
+  if (!w || !src) return directPlace(G, { ...args, budgetMs: 0 });   // ohne Worker die bisherige Kette (die Seite stünde sonst 30 s)
   return new Promise((resolve, reject) => {
     const id = ++search.seq, key = src.id;
     const send = withOsm => w.postMessage(withOsm ? { id, key, args, osm: src.osm, center: src.center, radius: src.radius } : { id, key, args });
@@ -2797,7 +3017,7 @@ function cancelSearch() {
   if (!search.busy) return;
   search.stop = true;
   const j = search.job;
-  if (j) { search.job = null; dropWorker(); j.reject(Object.assign(new Error('abgebrochen'), { cancelled: true })); }
+  if (j) { search.job = null; dropWorker(); j.reject(Object.assign(new Error('abgebrochen'), { cancelled: true, best: j.best || null })); }
   else setStatus('Suche wird abgebrochen, sobald die Wegedaten geladen sind …');
 }
 $('#cancelBtn').addEventListener('click', cancelSearch);
@@ -2873,7 +3093,7 @@ function landHtml(t) {
 async function planPlaces(placeIds, mode, fixedLLs = [], starR = 50) {
   const minDist = +$('#minDist').value, many = state.places.length > 1;
   const placed = fixedLLs.slice(), byTeam = new Map(), pools = {}, inOrder = [], chainInfo = [], starInfo = [];
-  let noAreas = false;
+  let noAreas = false, cancelledBest = false;
   for (const pid of placeIds) {
     const place = state.places.find(p => p.id === pid);
     const idx = state.teams.map((t, i) => (t.place === pid ? i : -1)).filter(i => i >= 0);
@@ -2890,11 +3110,20 @@ async function planPlaces(placeIds, mode, fixedLLs = [], starR = 50) {
     const obst = placed.map(ll => Pruefung.obstacle({ ll }, G.fromLatLon));
     state.seed = (state.seed * 7919 + 13) % 1000003;
     let out;
+    // Prüfungskette: Rechenbudget 30 s für den ganzen Planungslauf, auf die Orte verteilt (Wegedaten laden zählt nicht mit)
+    const examPlaces = placeIds.filter(id => state.teams.some(t => t.place === id));
+    const budgetMs = mode === 'pruefung' ? Math.round(CHAIN_BUDGET_MS / Math.max(1, examPlaces.length)) : 0;
     try {
       out = await searchPlace(G, { ...opt, pid, label: many ? placeLabel(place) + ': ' : '', seed: state.seed, mode, minDist, teams, obstacles: obst,
-        levels: [...new Set(teams.map(t => t.level))], star: mode === 'training' && $('#starMode').checked, starR });
-    } catch (e) { if (e && e.cancelled) return CANCELLED; throw e; }
-    if (search.stop) return CANCELLED;   // Abbruch, während die Seite selbst rechnete (ohne Worker)
+        levels: [...new Set(teams.map(t => t.level))], star: mode === 'training' && $('#starMode').checked, starR, budgetMs });
+    } catch (e) {
+      if (!(e && e.cancelled)) throw e;
+      // Abbruch während der Kettensuche: die zuletzt geprüfte Kette übernehmen, wenn danach kein Ort mehr offen ist
+      if (!(mode === 'pruefung' && e.best && pid === examPlaces[examPlaces.length - 1])) return CANCELLED;
+      out = { pools: Object.fromEntries(teams.map(t => [t.level, { list: [] }])), chain: e.best, status: 'abgebrochen – zuletzt geprüfte Kette' };
+      cancelledBest = true;
+    }
+    if (search.stop && !cancelledBest) return CANCELLED;   // Abbruch, während die Seite selbst rechnete (ohne Worker)
     const p = out.pools;
     for (const lv of Object.keys(p)) p[lv].list.forEach(c => { c.G = G; });
     pools[pid] = p;
@@ -2910,7 +3139,7 @@ async function planPlaces(placeIds, mode, fixedLLs = [], starR = 50) {
             : { gap: true, dist: Math.hypot(prev.v.pts[prev.v.pts.length - 1][0] - c.v.pts[0][0], prev.v.pts[prev.v.pts.length - 1][1] - c.v.pts[0][1]) };
           inOrder.push({ c, team: { ...state.teams[idx[ch.index[k]]] } }); placed.push(c.v.pts.map(q => G.toLatLon(q)));
         });
-        chainInfo.push({ place: placeLabel(place), gaps: ch.gaps, n: ch.order.length });
+        chainInfo.push({ place: placeLabel(place), gaps: ch.gaps, n: ch.order.length, status: out.status || '' });
         continue;
       }
     } else res = out.plans;
@@ -2935,7 +3164,7 @@ async function planPlaces(placeIds, mode, fixedLLs = [], starR = 50) {
     }
     res.plans[0].forEach((c, k) => { byTeam.set(idx[k], c); placed.push(c.v.pts.map(q => G.toLatLon(q))); });
   }
-  if (inOrder.length) return { ok: true, plan: inOrder.map(x => x.c), teams: inOrder.map(x => x.team), pools, noAreas, chainInfo };
+  if (inOrder.length) return { ok: true, plan: inOrder.map(x => x.c), teams: inOrder.map(x => x.team), pools, noAreas, chainInfo, cancelledBest };
   const order = [...byTeam.keys()].sort((a, b) => a - b);
   return { ok: true, plan: order.map(i => byTeam.get(i)), teams: order.map(i => ({ ...state.teams[i] })), pools, noAreas, starInfo };
 }
@@ -2948,8 +3177,10 @@ function starStatus(info) {
 // Zusammenfassung der Ketten für die Statuszeile
 function chainStatus(info) {
   if (!info || !info.length) return '';
-  return ' ' + info.map(x => `${info.length > 1 ? x.place + ': ' : ''}${x.n < 2 ? 'nur ein Trail' : x.gaps === 0 ? 'Kette ohne Lücke' : x.gaps >= x.n - 1 ? 'keine Kette möglich (Fußwege zu lang oder über spätere Trails)' : `Kette mit ${x.gaps} Lücke${x.gaps === 1 ? '' : 'n'}`}`).join(' · ') + '.';
+  return ' ' + info.map(x => `${info.length > 1 ? x.place + ': ' : ''}${x.n < 2 ? 'nur ein Trail' : x.gaps === 0 ? 'Kette ohne Lücke' : x.gaps >= x.n - 1 ? 'keine Kette möglich (Fußwege zu lang oder über spätere Trails)' : `Kette mit ${x.gaps} Lücke${x.gaps === 1 ? '' : 'n'}`}${x.status ? ` (${x.status})` : ''}`).join(' · ') + '.';
 }
+// Rechenbudget der Prüfungskette für einen ganzen Planungslauf (V3.7); Laden der Wegedaten zählt nicht mit
+const CHAIN_BUDGET_MS = 30000;
 // starR: Startkreis der Sternplanung für diesen einen Durchgang (Vorschlag aus der Meldung, sonst 50 m)
 async function run(starR = 50) {
   if (search.busy) return;
@@ -2976,7 +3207,7 @@ async function run(starR = 50) {
     state.plans = [r.plan]; state.active = 0; state.pools = r.pools; state.planTeams = r.teams;
     state.seen = r.plan.map(c => new Set([c.id]));
     const harder = r.plan.filter(c => !c.v.targetOk).length;
-    setStatus(`Trailplan erstellt. Alle Trails erfüllen die PO-Mindestanforderungen laut Kartendaten.` +
+    setStatus((r.cancelledBest ? 'Suche abgebrochen – übernommen wurde die zuletzt geprüfte Kette. ' : '') + `Trailplan erstellt. Alle Trails erfüllen die PO-Mindestanforderungen laut Kartendaten.` +
       (harder ? ` ${harder} Trail${harder === 1 ? ' hat' : 's haben'} zusätzliche Entscheidungsstellen (siehe Hinweis an der Karte).` : ' Keiner hat zusätzliche Entscheidungsstellen.') +
       ' Vor Ort prüfen: Zugang, Sicht, Abholung, Verkehr.' +
       (r.noAreas ? ' Hinweis: Hier sind keine Wohngebiete kartiert, die Ortsgrenze ist nur geschätzt.' : '') + chainStatus(r.chainInfo) + starStatus(r.starInfo));
@@ -3352,7 +3583,7 @@ async function replanPlace(pid) {
     state.examSeen = state.exam.trails.map(() => new Set());
     for (const k of Object.keys(state.examPools || {})) if (k.startsWith(pid + '|')) delete state.examPools[k];
     persistExam(); renderResults(); drawExam(true);
-    setStatus(`${placeLabel(place)} neu geplant: ${r.plan.length} Trail${r.plan.length === 1 ? '' : 's'}. Bitte abfahren und danach abhaken.`);
+    setStatus(`${r.cancelledBest ? 'Suche abgebrochen – übernommen wurde die zuletzt geprüfte Kette. ' : ''}${placeLabel(place)} neu geplant: ${r.plan.length} Trail${r.plan.length === 1 ? '' : 's'}.${chainStatus(r.chainInfo)} Bitte abfahren und danach abhaken.`);
   } catch (e) {
     console.error(e);
     setStatus(`Interner Fehler bei der Planung: ${e && e.message ? e.message : e}. Der bisherige Stand bleibt.`, true);

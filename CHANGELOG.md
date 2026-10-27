@@ -2,6 +2,21 @@
 
 Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Die aktuelle Version steht in der App neben der Überschrift.
 
+## V3.7 – 27.10.2026
+
+Bessere automatische Prüfungskette.
+
+- **Kombinierte Suche mit 30 s Rechenbudget:** Die bisherige Suche liefert zuerst eine Kette. Danach prüft die App systematisch weitere Trails (Startpunkte im 10-m-Raster) und sucht gezielt eine bessere Kette. Bewertet wird: 1. weniger Lücken, 2. weniger zusätzliche Entscheidungsstellen und Richtungswechsel, 3. kürzere Übergänge, 4. Solllänge. Das Laden der Wegedaten zählt nicht zum Budget. Bei mehreren Orten wird das Budget auf die Orte verteilt.
+- **Nur geprüfte Ergebnisse:** Jede Kette wird vor der Übernahme unabhängig neu geprüft (PO je Trail, Abstand der Trails, Übergänge 75–250 m und mind. 75 m Luftlinie, Fußweg berührt keinen späteren Trail). Status „beste im Budget gefundene Lösung“, keine Aussage über eine beste mögliche Kette. Lücken stehen wie bisher in Karte, Statuszeile und Bögen.
+- **Fortschritt und Abbrechen:** Die Statuszeile zeigt die beste bisher geprüfte Kette. „Suche abbrechen“ übernimmt die zuletzt geprüfte Kette (bei mehreren Orten nur, wenn der letzte Ort gerade sucht; sonst bleibt der bisherige Stand).
+- **Regeln für die automatische Kette** (Beschluss 27.10.2026):
+  - Fußwege zwischen den Trails folgen der Regel des GPX-Imports: spätere Trails nicht kreuzen, berühren oder benutzen, Zugang über das Startstück des nächsten Trails erlaubt, kein pauschaler 30-m-Puffer mehr. Weiterhin 75–250 m Fußweg und mind. 75 m Luftlinie.
+  - Trails dürfen 6 % kürzer oder länger als die Solllänge sein (Planertoleranz ±10 %, keine belegte PO-Toleranz). Kürzere Trails kommen dadurch häufiger vor.
+  - Startstücke ab 20 m statt 40 m. Der Abstand vom Start bis zur ersten Entscheidungsstelle (mind. 15 m) wird eigens geprüft.
+  - Der Mindestabstand zwischen den Trails bleibt unverändert.
+- Training, Stern, GPX-Anordnung und „Ersetzen“ rechnen wie bisher. Ohne Hintergrundprozess (Web Worker) bildet die Seite die Kette wie bisher, damit sie nicht 30 s steht.
+- Kommentar zum Abzweigungsabstand korrigiert (15 m, Planervorgabe ungeklärter Herkunft, keine PO-Regel).
+
 ## V3.6 – 27.10.2026
 
 - **Sternplanung ohne Überschneidung:** Trails dürfen sich nur noch innerhalb des Startkreises (50 m) nahe kommen. Bisher galt dafür ein Nahbereich von 80 m, sodass zwei Trails ein Stück dieselbe Straße laufen konnten (gemeldet aus Ochsenfurt). Außerhalb gilt der volle Mindestabstand, und kein Trail läuft in den Startkreis zurück.
