@@ -155,6 +155,8 @@ button.small { font-size: 13px; padding: 7px 10px; }
 .test-tag { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
 .status { font-size: 14px; color: var(--muted); min-height: 1.4em; margin: 8px 0 0; }
 .status.err { color: var(--bad); }
+#cancelBtn { margin-top: 6px; }
+.side > section.locked { opacity: .55; }
 .notice p { margin: 0; }
 .notice p + p { margin-top: 8px; }
 .notice button { margin: 6px 6px 0 0; }
@@ -320,7 +322,7 @@ details.privacy p { margin: 6px 0 0; }
       </div>
     </header>
 
-    <section>
+    <section class="inputs">
       <h2>1 · Ortschaft</h2>
       <form id="placeForm" class="row">
         <input id="placeInput" type="text" placeholder="z. B. Giebelstadt" autocomplete="off" aria-label="Ortschaft">
@@ -335,7 +337,7 @@ details.privacy p { margin: 6px 0 0; }
       <p class="hint">Oder einen Punkt auf der Karte antippen. Suche und Kartenklick gelten für den markierten Ort, geplant wird im Kreis. Rechts je Ort das Gelände (nur im Ort, mit Ortsrand oder auch Feld und Wald) und das Suchgebiet (Radius).</p>
     </section>
 
-    <section>
+    <section class="inputs">
       <h2>2 · Teams</h2>
       <div id="teams" class="teams"></div>
       <div class="row" style="margin-top:10px">
@@ -345,7 +347,7 @@ details.privacy p { margin: 6px 0 0; }
       </div>
     </section>
 
-    <section>
+    <section class="inputs">
       <h2>3 · Rahmen</h2>
       <div class="modeswitch seg" role="group" aria-label="Modus">
         <button type="button" data-mode="training">Training</button>
@@ -373,6 +375,7 @@ details.privacy p { margin: 6px 0 0; }
         <input id="importFile" type="file" accept=".gpx,application/gpx+xml,application/xml,text/xml" multiple hidden>
       </div>
       <p id="status" class="status" role="status"></p>
+      <button id="cancelBtn" class="small" type="button" hidden>Suche abbrechen</button>
       <div id="notice" class="warnbox notice" role="alert" hidden></div>
     </section>
 
@@ -396,7 +399,7 @@ details.privacy p { margin: 6px 0 0; }
 </div>
 
 <script src="vendor/leaflet/leaflet.js"></script>
-<script>
+<script id="plannerSrc">
 /* Trailplaner – Planungslogik (ohne DOM, testbar mit Node)
  * Grundlage: DVG-Prüfungsordnung Mantrailing, gültig ab 06.05.2024
  */
@@ -1801,6 +1804,48 @@ const Planner = (() => {
     return hit >= smp.length * share;
   }
 
+  // ---------- Suche für einen Ort (läuft im Web Worker oder, falls der nicht startet, auf der Seite) ----------
+  // Je Stufe einen Vorrat würfeln, dann die Kette (Prüfung) oder den Tagesplan (Training) bilden.
+  // Ein- und Ausgabe sind reine Daten; die Trails beziehen sich auf Wegnummern, die bei gleichen OSM-Daten überall gleich sind.
+  function planPlace(G, a, progress = () => {}) {
+    setTerrain(G, a.terrain, a.allowPaths, a.avoidLoops, a.strict);
+    const R = rng(a.seed), obstacles = a.obstacles || [], pools = {};
+    for (const lv of a.levels) {
+      progress(`${a.label || ''}Würfle ${lv}-Trails und prüfe sie gegen die PO …`);
+      const p = pool(G, lv, R, { want: 45, maxTries: 10000, mode: a.mode });
+      if (a.pid) p.list.forEach(c => { c.place = a.pid; c.id = a.pid + ':' + c.id; });
+      p.list = p.list.filter(c => obstacles.every(o => compatible(c, o, a.minDist)));
+      pools[lv] = p;
+    }
+    if (a.poolsOnly) return { pools };
+    if (a.mode === 'pruefung') {
+      // Trails in Reihe: Ziel → nächster Start 75–250 m Fußweg, Fußwege meiden spätere Trails
+      progress(`${a.label || ''}Reihe die Trails zu einer Kette …`);
+      const W = G._walk || (G._walk = walkGraph(G));
+      return { pools, chain: chain(G, W, a.teams, pools, R, a.minDist, { obstacles }) };
+    }
+    return { pools, plans: plans(G, a.teams, pools, R, a.minDist, 1) };
+  }
+  // Nachrichtenschleife im Worker: baut je Wegenetz-Nummer ein eigenes Netz aus den OSM-Daten (höchstens vier, die ältesten fallen weg)
+  // und meldet „missing“, wenn die Seite die Daten erneut schicken muss
+  function workerMain(scope) {
+    const graphs = new Map();
+    scope.onmessage = e => {
+      const m = e.data;
+      try {
+        if (m.osm) {
+          graphs.set(m.key, buildGraph(m.osm, m.center, m.radius));
+          if (graphs.size > 4) graphs.delete(graphs.keys().next().value);
+        }
+        const G = graphs.get(m.key);
+        if (!G) { scope.postMessage({ id: m.id, missing: true }); return; }
+        graphs.delete(m.key); graphs.set(m.key, G);   // zuletzt benutzt nach hinten
+        const result = planPlace(G, m.args, text => scope.postMessage({ id: m.id, progress: text }));
+        scope.postMessage({ id: m.id, result });
+      } catch (err) { scope.postMessage({ id: m.id, error: String((err && err.message) || err) }); }
+    };
+  }
+
   function setTerrain(G, mode, allowPaths = false, avoidLoops = true, strict = false) { G.terrain = TERRAIN[mode] !== undefined ? mode : 'ort'; G.allowPaths = !!allowPaths; G.avoidLoops = avoidLoops !== false; G.strict = !!strict; prepare(G); }
   function segOk(G, lvl, s) {
     if (!lvl.allowed.includes(s.cls)) return false;
@@ -1809,7 +1854,7 @@ const Planner = (() => {
     if (s.blocked) return false;
     return true;
   }
-  return { LEVELS, buildGraph, buildLand, terrainShares, prepare, setTerrain, pool, plans, alternatives, walkGraph, blockedEdges, walkPath, chain, replacement, reverseTrail, similar, snapEdge, validate, describe, endpointNames, toGPX, rng, trailPts, compatible, levelByLength, matchTrack, trackCandidate, orderFixed, transitPath };
+  return { LEVELS, buildGraph, buildLand, terrainShares, prepare, setTerrain, pool, plans, planPlace, workerMain, alternatives, walkGraph, blockedEdges, walkPath, chain, replacement, reverseTrail, similar, snapEdge, validate, describe, endpointNames, toGPX, rng, trailPts, compatible, levelByLength, matchTrack, trackCandidate, orderFixed, transitPath };
 })();
 if (typeof module !== 'undefined') module.exports = Planner;
 
@@ -2149,7 +2194,7 @@ const store = {
 const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946], contact: 'Felix Schuck, Obere Steigstr. 14, 97276 Margetshöchheim' };
 $('#privacyWho').textContent = CLUB.name + (CLUB.contact ? ', Kontakt: ' + CLUB.contact : '');
 // Versionsnummer: jede Änderung zählt um 0.1 hoch (V1.0 … V1.9, dann V2.0 …); Änderungen stehen in CHANGELOG.md
-const APP_VERSION = '3.1';
+const APP_VERSION = '3.2';
 document.getElementById('appVersion').textContent = 'V' + APP_VERSION;
 const saved = store.get();
 function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }
@@ -2287,6 +2332,8 @@ function invalidate() {
 }
 // Ortssuche und Kartenklick setzen die Mitte des markierten Orts
 function setCenter(c, name, fly = true) {
+  // Während der Suche bleibt der Ort, wie er ist (auch wenn eine vorher gestartete Ortssuche erst jetzt antwortet)
+  if (search.busy) { setStatus('Während der Trailsuche lässt sich der Ort nicht ändern. Bitte danach noch einmal wählen.', true); return; }
   invalidate();
   const p = activePlace(); p.center = c; p.name = name;
   renderPlaces(); drawArea(); persist();
@@ -2540,9 +2587,98 @@ async function graphFor(place, radius) {
     setStatus(`Lade Wege für ${placeLabel(place)} aus OpenStreetMap …`);
     const osm = await loadOSM(place.center, radius, false, placeLabel(place));
     setStatus('Baue Wegenetz …'); await tick();
-    state.graphs.set(key, Planner.buildGraph(osm, place.center, radius));
+    const G = Planner.buildGraph(osm, place.center, radius);
+    graphSrc.set(G, { id: ++search.seq, osm, center: place.center, radius });   // für das gleiche Netz im Worker
+    state.graphs.set(key, G);
   }
   return state.graphs.get(key);
+}
+
+// ---------- Trailsuche im Hintergrund (Web Worker) ----------
+// Der Worker bekommt den Planner-Code dieser Seite und baut aus denselben OSM-Daten ein gleiches Wegenetz (gleiche Wegnummern).
+// So bleibt die Seite während der Suche bedienbar und die Suche lässt sich abbrechen. Startet kein Worker, wird wie früher
+// direkt auf der Seite gerechnet (die Seite steht dann bis zum Ergebnis).
+const graphSrc = new WeakMap();
+const search = { worker: null, broken: typeof Worker === 'undefined', has: new Set(), job: null, seq: 0, busy: false, stop: false, timer: null };
+const CANCELLED = { ok: false, cancelled: true };
+// Trails des Prüfungsstands (Verläufe als Objekte): Löschen, Ersetzen, Import oder ein anderer Stand ändern ihn, Häkchen und
+// Geländeangaben nicht. Hat er sich während einer Suche geändert, wird deren Ergebnis nicht eingesetzt.
+const examTrailsSig = ex => (ex ? ex.trails.map(t => t.ll) : []);
+const sameTrails = (a, b) => a.length === b.length && a.every((ll, k) => ll === b[k]);
+function plannerWorker() {
+  if (search.worker || search.broken) return search.worker;
+  try {
+    const src = document.getElementById('plannerSrc').textContent + '\nPlanner.workerMain(self);\n';
+    const url = URL.createObjectURL(new Blob([src], { type: 'text/javascript' }));
+    const w = new Worker(url);
+    setTimeout(() => URL.revokeObjectURL(url), 60000);
+    w.onmessage = e => workerMessage(e.data);
+    // Skript lässt sich nicht starten (z. B. blockiert): ab jetzt auf der Seite rechnen, laufende Suche dort wiederholen
+    w.onerror = e => {
+      e.preventDefault(); console.error('Web Worker:', e.message);
+      search.broken = true; dropWorker();
+      const j = search.job; search.job = null;
+      if (j) directPlace(j.G, j.args).then(j.resolve, j.reject);
+    };
+    search.worker = w; search.has = new Set();
+  } catch (e) { console.error('Web Worker:', e); search.broken = true; }
+  return search.worker;
+}
+function dropWorker() { if (search.worker) search.worker.terminate(); search.worker = null; search.has = new Set(); }
+function workerMessage(m) {
+  const j = search.job;
+  if (!j || m.id !== j.id) return;
+  if (m.progress) { j.stage = m.progress; showSearchStatus(); return; }
+  if (m.missing && !j.resent) { j.resent = true; j.send(true); return; }
+  search.job = null;
+  if (m.result) { search.has.add(j.key); j.resolve(m.result); }
+  else j.reject(new Error(m.error || 'Wegenetz fehlt im Hintergrund'));
+}
+async function directPlace(G, args) {
+  setStatus(args.label + 'Suche Trails (diese Seite rechnet selbst, das kann einige Sekunden dauern) …'); await tick();
+  return Planner.planPlace(G, args);
+}
+// Sucht für einen Ort; Ergebnis wie Planner.planPlace. Wirft { cancelled: true } bei „Abbrechen“.
+function searchPlace(G, args) {
+  const w = plannerWorker(), src = graphSrc.get(G);
+  if (!w || !src) return directPlace(G, args);
+  return new Promise((resolve, reject) => {
+    const id = ++search.seq, key = src.id;
+    const send = withOsm => w.postMessage(withOsm ? { id, key, args, osm: src.osm, center: src.center, radius: src.radius } : { id, key, args });
+    search.job = { id, key, G, args, resolve, reject, send, resent: false, stage: args.label + 'Starte die Suche …', t0: Date.now() };
+    showSearchStatus();
+    send(!search.has.has(key));
+  });
+}
+function showSearchStatus() {
+  const j = search.job;
+  if (j) setStatus(`${j.stage} (${Math.floor((Date.now() - j.t0) / 1000)} s)`);
+}
+function cancelSearch() {
+  if (!search.busy) return;
+  search.stop = true;
+  const j = search.job;
+  if (j) { search.job = null; dropWorker(); j.reject(Object.assign(new Error('abgebrochen'), { cancelled: true })); }
+  else setStatus('Suche wird abgebrochen, sobald die Wegedaten geladen sind …');
+}
+$('#cancelBtn').addEventListener('click', cancelSearch);
+// Während einer Suche: Eingaben (Ort, Teams, Rahmen) und die Knöpfe, die eine neue Suche oder einen anderen Stand starten, sperren.
+// Karte, Ergebnisse und Druckansicht bleiben bedienbar.
+function searchBegin() {
+  search.busy = true; search.stop = false;
+  document.querySelectorAll('.side > section.inputs').forEach(s => { s.inert = true; s.classList.add('locked'); });
+  for (const b of ['#planBtn', '#resetBtn', '#examOpen', '#importBtn']) $(b).disabled = true;
+  document.querySelectorAll('[data-mode]').forEach(b => { b.disabled = true; });
+  $('#cancelBtn').hidden = false;
+  search.timer = setInterval(showSearchStatus, 1000);
+}
+function searchEnd() {
+  search.busy = false; search.stop = false; search.job = null;
+  clearInterval(search.timer); search.timer = null;
+  document.querySelectorAll('.side > section.inputs').forEach(s => { s.inert = false; s.classList.remove('locked'); });
+  for (const b of ['#planBtn', '#resetBtn', '#examOpen', '#importBtn']) $(b).disabled = false;
+  document.querySelectorAll('[data-mode]').forEach(b => { b.disabled = false; });
+  $('#cancelBtn').hidden = true;
 }
 // Geländeanteile (Wohngebiet, Wald, Wiese …) je Prüfungstrail. Die Flächen kommen getrennt vom Wegenetz und eigener Zwischenspeicher;
 // Fehlen sie (offline, Server überlastet), bleibt die Trailkarte ohne Geländezeile. Pro Ort nur ein Versuch je Seitenaufruf.
@@ -2597,8 +2733,6 @@ function landHtml(t) {
 // sind Hindernisse, weil sich die Suchkreise benachbarter Orte überlappen können.
 async function planPlaces(placeIds, mode, fixedLLs = []) {
   const minDist = +$('#minDist').value, many = state.places.length > 1;
-  state.seed = (state.seed * 7919 + 13) % 1000003;
-  const R = Planner.rng(state.seed);
   const placed = fixedLLs.slice(), byTeam = new Map(), pools = {}, inOrder = [], chainInfo = [];
   let noAreas = false;
   for (const pid of placeIds) {
@@ -2609,25 +2743,25 @@ async function planPlaces(placeIds, mode, fixedLLs = []) {
     let G;
     try { G = await graphFor(place, place.radius); }
     catch { return { ok: false, msg: 'OpenStreetMap ist gerade nicht erreichbar oder überlastet. Bitte in einer Minute noch einmal versuchen.' }; }
+    if (search.stop) return CANCELLED;
     if (!G.settlementAreas) noAreas = true;
-    Planner.setTerrain(G, place.terrain, $('#allowPaths').checked, $('#avoidLoops').checked, $('#strictTurns').checked);
+    const opt = { terrain: place.terrain, allowPaths: $('#allowPaths').checked, avoidLoops: $('#avoidLoops').checked, strict: $('#strictTurns').checked };
+    Planner.setTerrain(G, opt.terrain, opt.allowPaths, opt.avoidLoops, opt.strict);
     const teams = idx.map(i => ({ ...state.teams[i] }));
     const obst = placed.map(ll => Pruefung.obstacle({ ll }, G.fromLatLon));
-    const p = {};
-    for (const lv of [...new Set(teams.map(t => t.level))]) {
-      setStatus(`${many ? placeLabel(place) + ': ' : ''}Würfle ${lv}-Trails und prüfe sie gegen die PO …`); await tick();
-      const pool = Planner.pool(G, lv, R, { want: 45, maxTries: 10000, mode });
-      pool.list.forEach(c => { c.G = G; c.place = pid; c.id = pid + ':' + c.id; });
-      pool.list = pool.list.filter(c => obst.every(o => Planner.compatible(c, o, minDist)));
-      p[lv] = pool;
-    }
+    state.seed = (state.seed * 7919 + 13) % 1000003;
+    let out;
+    try {
+      out = await searchPlace(G, { ...opt, pid, label: many ? placeLabel(place) + ': ' : '', seed: state.seed, mode, minDist, teams, obstacles: obst,
+        levels: [...new Set(teams.map(t => t.level))] });
+    } catch (e) { if (e && e.cancelled) return CANCELLED; throw e; }
+    if (search.stop) return CANCELLED;   // Abbruch, während die Seite selbst rechnete (ohne Worker)
+    const p = out.pools;
+    for (const lv of Object.keys(p)) p[lv].list.forEach(c => { c.G = G; });
     pools[pid] = p;
     let res;
     if (mode === 'pruefung') {
-      // Trails in Reihe: Ziel → nächster Start 75–250 m Fußweg, Fußwege meiden spätere Trails
-      setStatus(`${many ? placeLabel(place) + ': ' : ''}Reihe die Trails zu einer Kette …`); await tick();
-      G._walk = G._walk || Planner.walkGraph(G);
-      const ch = Planner.chain(G, G._walk, teams, p, R, minDist, { obstacles: obst });
+      const ch = out.chain;
       res = { plans: ch.order.length ? [ch.order] : [] };
       if (ch.order.length) {
         ch.order.forEach((c, k) => {
@@ -2640,7 +2774,7 @@ async function planPlaces(placeIds, mode, fixedLLs = []) {
         chainInfo.push({ place: placeLabel(place), gaps: ch.gaps, n: ch.order.length });
         continue;
       }
-    } else res = Planner.plans(G, teams, p, R, minDist, 1);
+    } else res = out.plans;
     if (!res.plans.length) {
       const pre = many ? `${placeLabel(place)}: ` : '';
       const emptyLv = Object.keys(p).find(lv => !p[lv].list.length);
@@ -2668,12 +2802,14 @@ function chainStatus(info) {
   return ' ' + info.map(x => `${info.length > 1 ? x.place + ': ' : ''}${x.n < 2 ? 'nur ein Trail' : x.gaps === 0 ? 'Kette ohne Lücke' : x.gaps >= x.n - 1 ? 'keine Kette möglich (Fußwege zu lang oder über spätere Trails)' : `Kette mit ${x.gaps} Lücke${x.gaps === 1 ? '' : 'n'}`}`).join(' · ') + '.';
 }
 async function run() {
+  if (search.busy) return;
   const ids = state.places.filter(p => state.teams.some(t => t.place === p.id)).map(p => p.id);
   if (planMode === 'pruefung' && state.exam && !confirm('Neu planen verwirft den aktuellen Prüfungsstand. Fortfahren?')) return;
-  const btn = $('#planBtn'); btn.disabled = true;
+  searchBegin();
   try {
     radarStart(state.places.filter(p => ids.includes(p.id)));
     const r = await planPlaces(ids, planMode);
+    if (r.cancelled) { setStatus('Suche abgebrochen. Der bisherige Stand bleibt.'); return; }
     if (!r.ok) {
       state.plans = []; state.pools = null; state.planTeams = null;
       renderResults(); setStatus(r.msg, true);
@@ -2692,7 +2828,7 @@ async function run() {
   } catch (e) {
     console.error(e);
     setStatus(`Interner Fehler bei der Planung: ${e && e.message ? e.message : e}. Bitte melde mir diesen Text.`, true);
-  } finally { btn.disabled = false; radarStop(); }
+  } finally { searchEnd(); radarStop(); }
 }
 
 // ---------- Ausgabe ----------
@@ -2952,24 +3088,33 @@ function drawExam(fit = false, ex = state.exam) {
 }
 // Einen Trail neu würfeln; die übrigen bleiben exakt wie gespeichert und dienen nur als Hindernisse
 async function replaceTrail(i, btn) {
+  if (search.busy) return;
   const ex = state.exam, s = ex.settings, old = ex.trails[i];
   if (!confirm(`Trail ${i + 1} ersetzen? Das Häkchen geht verloren, der neue Trail muss abgefahren werden.`)) return;
   btn.disabled = true; btn.textContent = 'Suche Ersatz …';
+  searchBegin();
+  const sig = examTrailsSig(ex);
   try {
     const place = Pruefung.placeOf(ex, old);
     radarStart([place]);
     let G;
     try { G = await graphFor(place, place.radius || s.radius || 1200); }
     catch { setStatus(`OpenStreetMap ist gerade nicht erreichbar. Trail ${i + 1} bleibt unverändert.`, true); return; }
+    if (search.stop) { setStatus(`Suche abgebrochen. Trail ${i + 1} bleibt unverändert.`); return; }
     const lv = old.level, pk = place.id + '|' + lv;
-    Planner.setTerrain(G, place.terrain || 'ort', s.allowPaths, s.avoidLoops, s.strict);
+    const opt = { terrain: place.terrain || 'ort', allowPaths: s.allowPaths, avoidLoops: s.avoidLoops, strict: s.strict };
+    Planner.setTerrain(G, opt.terrain, opt.allowPaths, opt.avoidLoops, opt.strict);
     state.examPools = state.examPools || {};
     if (!state.examPools[pk]) {
-      setStatus(`Würfle ${lv}-Trails und prüfe sie gegen die PO …`); await tick();
-      const pool = Planner.pool(G, lv, Planner.rng(Date.now() % 1000003), { want: 45, maxTries: 10000, mode: 'pruefung' });
+      let out;
+      try { out = await searchPlace(G, { ...opt, label: '', seed: Date.now() % 1000003, mode: 'pruefung', levels: [lv], poolsOnly: true }); }
+      catch (e) { if (e && e.cancelled) { setStatus(`Suche abgebrochen. Trail ${i + 1} bleibt unverändert.`); return; } throw e; }
+      if (search.stop) { setStatus(`Suche abgebrochen. Trail ${i + 1} bleibt unverändert.`); return; }
+      const pool = out.pools[lv];
       pool.list.forEach(c => { c.G = G; c.place = place.id; });
       state.examPools[pk] = pool;
     }
+    if (state.exam !== ex || !sameTrails(sig, examTrailsSig(ex))) { setStatus(`Der Prüfungsstand wurde während der Suche geändert. Bitte Trail ${i + 1} noch einmal ersetzen.`, true); return; }
     const obstacles = ex.trails.filter((_, k) => k !== i).map(t => Pruefung.obstacle(t, G.fromLatLon));
     const oldPts = old.ll.map(G.fromLatLon);
     const isOld = c => Planner.similar(c.v.pts, oldPts);   // auch kein fast gleicher Trail mit leicht verschobenem Start
@@ -3016,21 +3161,24 @@ async function replaceTrail(i, btn) {
     console.error(e);
     setStatus(`Interner Fehler beim Ersetzen: ${e && e.message ? e.message : e}. Trail ${i + 1} bleibt unverändert.`, true);
   } finally {
-    radarStop();
+    searchEnd(); radarStop();
     if (btn.isConnected) { btn.disabled = false; btn.textContent = 'Ersetzen'; }
   }
 }
 // Nur einen Ort neu planen: Trails, Häkchen und Zuteilung der anderen Orte bleiben; sie sind dabei Hindernisse
 async function replanPlace(pid) {
   const ex = state.exam, place = state.places.find(p => p.id === pid);
-  if (!ex || !place) return;
+  if (!ex || !place || search.busy) return;
   if (!confirm(`Nur ${placeLabel(place)} neu planen? Trails, Häkchen und Zuteilung dieses Orts gehen verloren, die anderen Orte bleiben.`)) return;
   if (ex.trails.some(t => t.place === pid && t.imported) && !confirm('Dieser Ort enthält importierte Trails. Sie werden verworfen und durch neu geplante Trails ersetzt. Wirklich fortfahren?')) return;
-  const btn = $('#planBtn'); btn.disabled = true;
+  searchBegin();
   try {
     if (!state.teams.some(t => t.place === pid)) { setStatus(`Ort ${pid} hat keine Teams: bei den Teams Ort ${pid} auswählen. Der bisherige Stand bleibt.`, true); return; }
     radarStart([place]);
+    const sig = examTrailsSig(ex);
     const r = await planPlaces([pid], 'pruefung', ex.trails.filter(t => t.place !== pid).map(t => t.ll));
+    if (r.cancelled) { setStatus('Suche abgebrochen. Der bisherige Stand bleibt.'); return; }
+    if (state.exam !== ex || !sameTrails(sig, examTrailsSig(ex))) { setStatus('Der Prüfungsstand wurde während der Suche geändert. Bitte noch einmal neu planen. Der bisherige Stand bleibt.', true); return; }
     if (!r.ok) { setStatus(`${r.msg} Der bisherige Stand bleibt.`, true); return; }
     const snap = { id: place.id, name: place.name, center: place.center, terrain: place.terrain, radius: place.radius };
     state.exam = Pruefung.replacePlaceTrails(ex, pid, r.plan.map(snapshot), snap);
@@ -3041,7 +3189,7 @@ async function replanPlace(pid) {
   } catch (e) {
     console.error(e);
     setStatus(`Interner Fehler bei der Planung: ${e && e.message ? e.message : e}. Der bisherige Stand bleibt.`, true);
-  } finally { btn.disabled = false; radarStop(); }
+  } finally { searchEnd(); radarStop(); }
 }
 // ---------- GPX-Import ----------
 // Trails aus GPX-Dateien (z. B. Mapy.com) einlesen, prüfen, zur Kette ordnen und als Prüfungsstand übernehmen.

@@ -2,6 +2,17 @@
 
 Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Die aktuelle Version steht in der App neben der Überschrift.
 
+## V3.2 – 27.10.2026
+
+Trailsuche im Hintergrund (Web Worker).
+
+- **Seite bleibt bedienbar:** Das Würfeln der Trails und das Bilden von Kette bzw. Tagesplan laufen in einem eigenen Hintergrundprozess. Karte, Ergebnisse und Druckansicht bleiben während der Suche bedienbar; die Seite friert auch bei MT-II nicht mehr ein. Das gilt für „Trails planen“, „Nur Ort … neu planen“ und das Würfeln bei „Ersetzen“.
+- **Fortschritt und Abbrechen:** Die Statuszeile zeigt den Suchschritt und die Sekunden. „Suche abbrechen“ beendet die Suche sofort, der bisherige Stand bleibt.
+- **Gesperrt während der Suche:** Ort, Teams, Rahmen, Modus, „Trails planen“, „Eingaben löschen“, „Gespeicherten Stand öffnen“, „Import Trails“, weitere Suchen, Kartenklicks und Treffer der Ortssuche. Werden die Trails des Prüfungsstands während der Suche geändert (z. B. ein Trail gelöscht), setzt „Nur Ort neu planen“ bzw. „Ersetzen“ das Ergebnis nicht ein und bittet um einen neuen Versuch.
+- **Gleiche Regeln:** Der Hintergrund nutzt denselben Planungscode und baut aus denselben OSM-Daten dasselbe Wegenetz. Startet kein Hintergrundprozess (alter oder gesperrter Browser), rechnet die Seite wie bisher selbst.
+- Der Zufall wird jetzt je Ort neu angestoßen; die vorgeschlagenen Trails unterscheiden sich daher von früheren Versionen.
+- „Kette neu aufbauen“ (importierte Trails) und die eigentliche Ersatzsuche laufen weiter auf der Seite, sie sind schnell.
+
 ## V3.1 – 27.10.2026
 
 - Hinweis an Suchmaschinen, die Seite nicht in die Suche aufzunehmen und den Links nicht zu folgen (`noindex, nofollow`). Wer den Link hat, kann die App weiter nutzen. Das GitHub-Repository selbst bleibt auffindbar.
