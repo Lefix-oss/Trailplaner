@@ -7,13 +7,13 @@ Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 u
 # Aktueller Stand und Übergabe (Stand 27.10.2026, wird bei jeder Veröffentlichung aktualisiert)
 
 ## 1. Versions- und Veröffentlichungsstand
-- **Veröffentlicht (GitHub Pages, Zweig `main`):** **V3.9.1**, Commit `e7f2408`. Pages-Lauf am 27.10.2026 erfolgreich, Live-Seite per Abruf geprüft.
-- **Lokal, noch NICHT veröffentlicht:** **V3.9.2** (Laden der Wegedaten in Kacheln), Zweig `entwicklung`. Veröffentlichung erst nach ausdrücklicher Freigabe.
+- **Veröffentlicht (GitHub Pages, Zweig `main`):** **V3.9.2**, Commit `239d2d1`. Pages-Lauf am 27.10.2026 erfolgreich, Live-Seite per Abruf geprüft (`APP_VERSION = '3.9.2'`). Vorher live: V3.9.1 (`e7f2408`).
+- **Lokal, noch nicht veröffentlicht:** nichts. Die Nachführung dieses Abschnitts nach der Veröffentlichung ist ein eigener Dokumentations-Commit ohne neue Version.
 - **Rückfallstand:** Tag `v3.6` (Commit `8f490af`, vor der neuen Prüfungskette) ist gepusht. Zurück auf einen Stand per `git revert` des betreffenden Commits auf `main` und Push. Das Speicherformat hat sich seit V3.6 nicht geändert.
 - **Zweige:** `main` = Live-Seite, `entwicklung` = Arbeitsstand. `forschung` (nur lokal, nie pushen) enthält Prototypen, Messreihen und Wegedaten Ochsenfurt (siehe 6). Die Beschlüsse daraus stehen in diesem Dokument.
 - **Ablauf:** Bauen auf `entwicklung` → Tests → Freigabe → Fast-Forward nach `main` → Push → Pages-Lauf über die GitHub-API abwarten.
 
-## 2. Verhalten der Funktionen (V3.9.1, dazu V3.9.2 lokal)
+## 2. Verhalten der Funktionen (V3.9.2)
 - **Training (Tagesplan):** Je Stufe ein Vorrat von bis zu 45 Kandidaten (`pool`) aus Zufallsläufen und anschließender systematischer Suche (Startpunkte alle 25 m). Daraus wählt eine zufallsgestützte Kombination (`plans`) einen verträglichen Satz. Länge immer genau die Solllänge, Startstücke ab 40 m. „Alternativ-Trail“ je Karte. Erneutes Planen liefert andere Trails (Startwert zählt hoch).
 - **Stern (nur Training, Häkchen „Sternförmig“):** Die App sucht den Startpunkt selbst: zuerst Parkplätze aus OSM (an Fahrgassen erkannt, zusammengefasst im Umkreis von 80 m), sonst Kreuzungen ab 3 Wegen. Geprüft werden je Art bis zu 20 zufällig gewählte Punkte im inneren Kreis (Radius − 150 m), innerhalb von 10 s mit bzw. 20 s ohne Ergebnis. Regeln siehe 3. Kein Stern: Meldung mit Knöpfen „75-m-“ bzw. „100-m-Startkreis versuchen“ (gilt für einen Durchgang, technisch höchstens 150 m) und Hinweis „auf zwei Orte verteilen“.
 - **Automatische Prüfungskette (seit V3.7):** Mit Web Worker läuft die kombinierte Suche mit **30 s Rechenbudget** je Planungslauf, bei mehreren Orten aufgeteilt. Das Laden der Wegedaten zählt nicht mit. Ablauf:
@@ -81,7 +81,7 @@ Ausführliche Kriterientabelle mit Herkunft: auf Zweig `forschung` unter `forsch
 
 **Wegedaten:**
 - Reihenfolge der Quellen: im Browser gespeichert (14 Tage frisch) → fester Auszug Giebelstadt/Essfeld vom 21.10.2026 → Overpass-Server (overpass-api.de, overpass.kumi.systems, overpass.private.coffee, gestaffelt im Abstand von 8 s).
-- Ab V3.9.2 (lokal) in Kacheln, siehe Eintrag V3.9.2. Bei Serverausfall ältere gespeicherte Daten mit Hinweis.
+- Ab V3.9.2 in Kacheln, siehe Eintrag V3.9.2. Bei Serverausfall ältere gespeicherte Daten mit Hinweis.
 - Geländeanteile (Hinweis „Gelände außerhalb der PO-Liste“ ab 5 %) nur im Prüfungsmodus.
 
 ## 4. Wichtige technische Eigenschaften
@@ -102,7 +102,7 @@ Ausführliche Kriterientabelle mit Herkunft: auf Zweig `forschung` unter `forsch
   - vom nächsten Trail nur dessen Startstück.
 
   Gibt es keine geprüfte Kette, wird wie bisher ohne Kette geplant.
-- **Speicherformat:** unverändert (Version 2). Seit V3.9.2 (lokal) zusätzlich Kacheln im IndexedDB-Speicher „trailplaner“, ältere Gesamtabfragen werden weiter genutzt.
+- **Speicherformat:** unverändert (Version 2). Seit V3.9.2 zusätzlich Kacheln im IndexedDB-Speicher „trailplaner“, ältere Gesamtabfragen werden weiter genutzt.
 
 ## 5. Bekannte Einschränkungen und offene Aufgaben
 - **Einschränkung, extern:** Die freien Overpass-Server sind zeitweise überlastet. Am 27.10.2026 gemessen: overpass-api.de meldete „alle Rechenplätze belegt“ (502) bzw. brauchte rund 40 s je Kachel, private.coffee 504 nach 86 s, kumi keine Antwort in 90 s. Das erste Laden großer Gebiete kann deshalb Minuten dauern oder scheitern. V3.9.2 mildert das, behebt es aber nicht.
@@ -120,7 +120,7 @@ Ausführliche Kriterientabelle mit Herkunft: auf Zweig `forschung` unter `forsch
 - **Bewusst nicht gewünscht:** Verlaufsplan auf dem Bogen, Gehzeit bei „legen bis“, Markierung „ruhig/belebt“ von Hand.
 
 ## 6. Nachweise
-- **Testsuite (Node 24, `node --test "tests/*.test.mjs"`):** V3.9.2 lokal 126 Tests, 125 bestanden, 1 übersprungen (`testdaten.test.mjs` braucht den lokalen Ordner `testdaten/`, der nie ins Repository kommt). Wichtige Dateien: `tests/kette.test.mjs` (Grenzen der Kette), `tests/star.test.mjs` (Sternregeln, unabhängig nachgeprüft), `tests/worker.test.mjs`.
+- **Testsuite (Node 24, `node --test "tests/*.test.mjs"`):** V3.9.2: 126 Tests, 125 bestanden, 1 übersprungen (`testdaten.test.mjs` braucht den lokalen Ordner `testdaten/`, der nie ins Repository kommt). Wichtige Dateien: `tests/kette.test.mjs` (Grenzen der Kette), `tests/star.test.mjs` (Sternregeln, unabhängig nachgeprüft), `tests/worker.test.mjs`.
 - **Browser (Chrome im Vorschaufenster der Entwicklungsumgebung, PC):**
   - V3.7: C3 (Giebelstadt, Nur im Ort, 3×MT-I + 2×MT-II) Kette ohne Lücke in 28 s.
   - V3.7: C5 (Giebelstadt, Ort und Ortsrand, 5×MT-I + 5×MT-II) Abbruch und Neustart ohne verspätete Meldungen.
@@ -136,7 +136,7 @@ Ausführliche Kriterientabelle mit Herkunft: auf Zweig `forschung` unter `forsch
 
 ---
 
-## V3.9.2 – 27.10.2026 (lokal, noch nicht veröffentlicht)
+## V3.9.2 – 27.10.2026
 
 - **Für den Nutzer:** Wegedaten werden in Bereichen von etwa 2,2 × 2,2 km geladen und einzeln im Browser gespeichert. Die Statuszeile zeigt „Lade Wege …: 5 von 12 Bereichen“. Ein neuer Radius oder eine leicht versetzte Mitte lädt nur fehlende Bereiche nach. Scheitert ein Bereich, nennt die Meldung, wie viele schon gespeichert sind, und ein neuer Versuch lädt nur noch den Rest.
 - **Geänderte Regeln bzw. Technik:**
