@@ -2,6 +2,12 @@
 
 Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Die aktuelle Version steht in der App neben der Überschrift.
 
+## V2.7 – 27.10.2026
+
+Sicherheit: Texte in den Karten-Tooltips werden maskiert.
+
+- Die Hinweise beim Überfahren der Karte (Abbiegepunkte, Trail, Start und Ziel) enthalten Straßennamen aus OpenStreetMap, Teamnamen und Texte aus geöffneten Prüfungsdateien. Sie wurden bisher als HTML eingesetzt; ein manipulierter Name hätte so Code in der Seite ausführen können. Jetzt werden sie wie alle anderen Texte maskiert. Sichtbar ändert sich nichts.
+
 ## V2.6 – 27.10.2026
 
 Gelände der Prüfungstrails besser an der PO prüfen: Wohngebiet, Wald, Wiese.

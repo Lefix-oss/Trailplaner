@@ -2134,7 +2134,7 @@ const store = {
 const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946], contact: '' };
 $('#privacyWho').textContent = CLUB.name + (CLUB.contact ? ', Kontakt: ' + CLUB.contact : '');
 // Versionsnummer: jede Änderung zählt um 0.1 hoch (V1.0 … V1.9, dann V2.0 …); Änderungen stehen in CHANGELOG.md
-const APP_VERSION = '2.6';
+const APP_VERSION = '2.7';
 document.getElementById('appVersion').textContent = 'V' + APP_VERSION;
 const saved = store.get();
 function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }
@@ -2720,17 +2720,17 @@ function drawPlan() {
     bounds.push(...ll);
     L.polyline(ll, { color: '#ffffff', weight: 9, opacity: 0.9 }).addTo(trailLayer);
     L.polyline(ll, { color, weight: 5, opacity: 1 }).addTo(trailLayer)
-      .bindTooltip(`Trail ${i + 1} · ${state.planTeams[i].name} · ${c.tr.level}${placeSuffix(c.place)} · ${Math.round(c.v.length)} m`, { sticky: true });
+      .bindTooltip(`Trail ${i + 1} · ${esc(state.planTeams[i].name)} · ${esc(c.tr.level)}${esc(placeSuffix(c.place))} · ${Math.round(c.v.length)} m`, { sticky: true });   // Tooltips sind HTML: Namen (auch aus OSM) maskieren
     const steps = Planner.describe(c.G, c.tr);
     let n = 0;
     steps.filter(s => s.kind === 'turn').forEach(s => {
       n++;
       const p = pointAtDist(c.v.pts, s.at);
       L.marker(c.G.toLatLon(p), { icon: L.divIcon({ className: '', html: `<div class="lf-mark lf-turn" style="background:${color}"></div>`, iconSize: [12, 12], iconAnchor: [6, 6] }), keyboard: false })
-        .bindTooltip(`Trail ${i + 1}, ${s.at} m: ${s.text}`).addTo(trailLayer);
+        .bindTooltip(`Trail ${i + 1}, ${+s.at} m: ${esc(s.text)}`).addTo(trailLayer);
     });
-    L.marker(ll[0], { icon: icon('', color, 'S' + (i + 1)) }).bindTooltip(`Trail ${i + 1} · ${state.planTeams[i].name}: Start`).addTo(trailLayer);
-    L.marker(ll[ll.length - 1], { icon: icon('lf-end', color, 'Z' + (i + 1)) }).bindTooltip(`Trail ${i + 1} · ${state.planTeams[i].name}: Ziel`).addTo(trailLayer);
+    L.marker(ll[0], { icon: icon('', color, 'S' + (i + 1)) }).bindTooltip(`Trail ${i + 1} · ${esc(state.planTeams[i].name)}: Start`).addTo(trailLayer);
+    L.marker(ll[ll.length - 1], { icon: icon('lf-end', color, 'Z' + (i + 1)) }).bindTooltip(`Trail ${i + 1} · ${esc(state.planTeams[i].name)}: Ziel`).addTo(trailLayer);
   });
   if (bounds.length) map.fitBounds(bounds, { padding: [30, 30] });
 }
@@ -2878,9 +2878,9 @@ function drawExam(fit = false, ex = state.exam) {
     L.polyline(ll, { color, weight: 5, opacity: 1 }).addTo(trailLayer).bindTooltip(`Trail ${i + 1} · ${esc(t.level)}${esc(examPlaceSuffix(ex, t))} · ${+t.length} m`, { sticky: true });
     t.steps.filter(s => s.kind === 'turn').forEach(s => {
       L.marker(llAtDist(ll, s.at), { icon: L.divIcon({ className: '', html: `<div class="lf-mark lf-turn" style="background:${color}"></div>`, iconSize: [12, 12], iconAnchor: [6, 6] }), keyboard: false })
-        .bindTooltip(`Trail ${i + 1}, ${s.at} m: ${s.text}`).addTo(trailLayer);
+        .bindTooltip(`Trail ${i + 1}, ${+s.at} m: ${esc(s.text)}`).addTo(trailLayer);
     });
-    if (t.link && t.link.ll) L.polyline(t.link.ll, { color: '#1d2620', weight: 3, opacity: 0.75, dashArray: '4 7' }).addTo(trailLayer).bindTooltip(`Fußweg zu Trail ${i + 1}: ${t.link.dist} m`, { sticky: true });
+    if (t.link && t.link.ll) L.polyline(t.link.ll, { color: '#1d2620', weight: 3, opacity: 0.75, dashArray: '4 7' }).addTo(trailLayer).bindTooltip(`Fußweg zu Trail ${i + 1}: ${+t.link.dist} m`, { sticky: true });
     L.marker(ll[0], { icon: icon('', color, 'S' + (i + 1)) }).bindTooltip(`Trail ${i + 1}: Start`).addTo(trailLayer);
     L.marker(ll[ll.length - 1], { icon: icon('lf-end', color, 'Z' + (i + 1)) }).bindTooltip(`Trail ${i + 1}: Ziel`).addTo(trailLayer);
   });
