@@ -2,6 +2,11 @@
 
 Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Die aktuelle Version steht in der App neben der Überschrift.
 
+## V3.6 – 27.10.2026
+
+- **Sternplanung ohne Überschneidung:** Trails dürfen sich nur noch innerhalb des Startkreises (50 m) nahe kommen. Bisher galt dafür ein Nahbereich von 80 m, sodass zwei Trails ein Stück dieselbe Straße laufen konnten (gemeldet aus Ochsenfurt). Außerhalb gilt der volle Mindestabstand, und kein Trail läuft in den Startkreis zurück.
+- **Vorschläge, wenn kein Stern passt:** Unter der Meldung stehen die Knöpfe „Mit 75-m-Startkreis versuchen“ und „Mit 100-m-Startkreis versuchen“ (gilt nur für diesen Durchgang) sowie der Hinweis, die Trails auf zwei Orte zu verteilen. Ein größerer Startkreis steht auf der Karte, in der Statuszeile und in den Trailkarten („Startkreis 100 m“).
+
 ## V3.5 – 27.10.2026
 
 Sternplanung im Training.

@@ -21,15 +21,16 @@ function dense(pts) {
   return out;
 }
 // Regeln des Sterns unabhängig vom Planer nachprüfen
-function checkStar(plan, p, minDist) {
+function checkStar(plan, p, minDist, r = 50) {
   for (const c of plan) {
-    assert.ok(d(c.v.pts[0], p) <= 50, `Start ${Math.round(d(c.v.pts[0], p))} m vom Startpunkt`);
-    const q = dense(c.v.pts), k = q.findIndex(x => d(x, p) > 80);
+    assert.ok(d(c.v.pts[0], p) <= r, `Start ${Math.round(d(c.v.pts[0], p))} m vom Startpunkt`);
+    const q = dense(c.v.pts), k = q.findIndex(x => d(x, p) > r);
     assert.ok(k > 0, 'verlässt den Nahbereich');
-    assert.ok(q.slice(k).every(x => d(x, p) > 78), 'kehrt nicht in den Nahbereich zurück');
+    assert.ok(q.slice(k).every(x => d(x, p) > r - 2), 'kehrt nicht in den Nahbereich zurück');
   }
   for (let i = 0; i < plan.length; i++) for (let j = i + 1; j < plan.length; j++) {
-    const a = dense(plan[i].v.pts).filter(x => d(x, p) > 85), b = plan[j].v.pts;
+    // ab Startkreis + Mindestabstand darf kein Punkt eines Trails näher als minDist an einem anderen liegen (am Kreisrand bleibt ein schmaler Übergang)
+    const a = dense(plan[i].v.pts).filter(x => d(x, p) > r + minDist), b = plan[j].v.pts;
     assert.ok(a.every(x => lineDist(x, b) >= minDist - 2), `Trail ${i + 1} und ${j + 1} halten außerhalb des Nahbereichs Abstand`);
   }
 }
@@ -85,4 +86,18 @@ test('Stern: zu viele Trails für das Gebiet ergeben eine leere Planung statt ei
   const r = Planner.planPlace(graph(), { ...ARGS, ms: 1500, teams: Array.from({ length: 12 }, (_, i) => ({ name: 'T' + i, level: 'MT-I' })) });
   assert.equal(r.plans.plans.length, 0);
   assert.equal(r.star.found, false);
+  assert.equal(r.star.r, 50);
+});
+
+// Fünf Trails passen um einen Giebelstädter Parkplatz nicht getrennt in 50 m, mit dem vorgeschlagenen 100-m-Startkreis schon
+test('Stern: größerer Startkreis (Vorschlag) – Starts im Kreis, außerhalb keine Überschneidung', () => {
+  const teams = Array.from({ length: 5 }, (_, i) => ({ name: 'T' + i, level: 'MT-I' }));
+  const r = structuredClone(Planner.planPlace(graph(), { ...ARGS, seed: 2, teams, starR: 100 }));
+  assert.ok(r.star.found);
+  assert.equal(r.star.r, 100);
+  const plan = r.plans.plans[0];
+  assert.equal(plan.length, 5);
+  assert.ok(plan.every(c => c.star.r === 100));
+  checkStar(plan, r.star.p, 30, 100);
+  assert.equal(Planner.planPlace(graph(), { ...ARGS, starR: 9999 }).star.r, 150, 'höchstens 150 m');
 });

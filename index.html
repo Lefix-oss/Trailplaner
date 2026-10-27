@@ -1255,7 +1255,7 @@ const Planner = (() => {
       if (!v.ok) { for (const c of v.checks) if (!c.ok) fail(c.label); return; }
       let tail = null;
       if (opts.near) {
-        tail = starTail(v.pts, opts.near.p);
+        tail = starTail(v.pts, opts.near.p, opts.near.r);
         if (!tail) { fail('läuft zum Startbereich zurück oder verlässt ihn nicht'); return; }
       }
       const segSet = new Set(tr.legs.map(l => l.seg));
@@ -1279,7 +1279,7 @@ const Planner = (() => {
         id: levelKey + '#' + out.length, tr, v, segSet, nodeSet, samples: smp,
         bbox: [Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)], score,
       };
-      if (tail) c.star = { p: opts.near.p, tail };
+      if (tail) c.star = { p: opts.near.p, r: opts.near.r, tail };
       out.push(c);
     };
     // Durchgang 1: Zufallssuche nach idealen Trails; Durchgang 2 (falls nötig): auch mit zusätzlichen Entscheidungsstellen
@@ -1403,16 +1403,16 @@ const Planner = (() => {
   }
 
   // ---------- Sternplanung (Training) ----------
-  // Alle Trails starten höchstens STAR_START Meter vom gemeinsamen Startpunkt (Parkplatz oder Kreuzung). Im Nahbereich
-  // (STAR_ZONE, etwas größer, damit auch fünf und mehr Trails Platz finden) dürfen sie sich nahe kommen; wer ihn verlassen hat, kommt nicht zurück.
-  const STAR_START = 50, STAR_ZONE = 80, STAR_CENTERS = 20;
+  // Alle Trails starten im Startkreis (Standard STAR_R = 50 m, auf Wunsch größer) um den gemeinsamen Startpunkt (Parkplatz oder Kreuzung).
+  // Nur im Startkreis dürfen sie sich nahe kommen; außerhalb gilt der normale Mindestabstand, und wer ihn verlassen hat, kommt nicht zurück.
+  const STAR_R = 50, STAR_CENTERS = 20;
   // Teil des Trails nach dem Startbereich (Stützpunkte alle 8 m) oder null, wenn er zu weit weg beginnt, nicht hinausführt oder zurückkehrt
-  function starTail(pts, p) {
-    if (dist(pts[0], p) > STAR_START) return null;
+  function starTail(pts, p, r = STAR_R) {
+    if (dist(pts[0], p) > r) return null;
     const smp = samples(pts);
-    const k = smp.findIndex(q => dist(q, p) > STAR_ZONE);
+    const k = smp.findIndex(q => dist(q, p) > r);
     if (k < 0 || smp.length - k < 2) return null;
-    for (let i = k; i < smp.length; i++) if (dist(smp[i], p) <= STAR_ZONE) return null;
+    for (let i = k; i < smp.length; i++) if (dist(smp[i], p) <= r) return null;
     // ab dem Austritt die echten Linienpunkte (Stützpunkte würden Ecken abschneiden)
     const cum = cumLens(pts), dk = k * SAMPLE_STEP;
     return [smp[k], ...pts.filter((_, i) => cum[i] > dk)];
@@ -1467,6 +1467,7 @@ const Planner = (() => {
     return best;
   }
   function star(G, a, R, obstacles, progress) {
+    const starR = Math.min(150, Math.max(STAR_R, +a.starR || STAR_R));   // Startkreis: 50 m, auf Wunsch bis 150 m
     const centers = starCenters(G, R);
     const t0 = Date.now(), budget = a.ms || 10000;   // mit Ergebnis nach 10 s aufhören, ohne spätestens nach 20 s
     let best = null, pools = {}, lastPools = {}, tried = 0;
@@ -1476,11 +1477,11 @@ const Planner = (() => {
       if (best && best.center.parking && !ctr.parking) break;   // ein Stern am Parkplatz geht vor
       const nPark = centers.filter(x => x.parking).length;
       progress(`${a.label || ''}${ctr.parking ? `Prüfe Parkplatz ${k + 1} von ${nPark}` : `Kein Parkplatz passt, prüfe Kreuzung ${k + 1 - nPark} von ${centers.length - nPark}`} …`);
-      const near = { p: ctr.p, r: STAR_START };
+      const near = { p: ctr.p, r: starR };
       const p = {};
       for (const lv of a.levels) {
         const starts = G.segs.filter(s => segOk(G, LEVELS[lv], s) && s.a !== s.b && s.len >= MIN_DECISION_GAP + 5 && s.inside >= TERRAIN[G.terrain || 'ort'] &&
-          s.pts.some((q, i) => i > 0 && segPointDist(ctr.p, s.pts[i - 1], q) <= STAR_START));
+          s.pts.some((q, i) => i > 0 && segPointDist(ctr.p, s.pts[i - 1], q) <= starR));
         const pl = pool(G, lv, R, { want: 30, maxTries: 4000, mode: 'training', starts, near, searchSteps: 150000 });
         if (a.pid) pl.list.forEach(c => { c.place = a.pid; c.id = a.pid + ':s' + k + ':' + c.id; });
         pl.list = pl.list.filter(c => obstacles.every(o => compatible(c, o, a.minDist)));
@@ -1491,9 +1492,9 @@ const Planner = (() => {
       const pick = starPick(a.teams, p, R, a.minDist);
       if (pick && (!best || pick.score > best.score)) { best = { ...pick, center: ctr }; pools = p; }
     }
-    if (!best) return { pools: lastPools, plans: { plans: [], failTeam: null }, star: { centers: tried, found: false } };
+    if (!best) return { pools: lastPools, plans: { plans: [], failTeam: null }, star: { centers: tried, found: false, r: starR } };
     for (const lv of Object.keys(pools)) pools[lv].list.forEach(c => { c.star.parking = best.center.parking; });
-    return { pools, plans: { plans: [best.plan], failTeam: null }, star: { p: best.center.p, parking: best.center.parking, centers: tried, found: true } };
+    return { pools, plans: { plans: [best.plan], failTeam: null }, star: { p: best.center.p, parking: best.center.parking, centers: tried, found: true, r: starR } };
   }
 
   function toGPX(G, cand, name) {
@@ -2325,7 +2326,7 @@ const store = {
 const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946], contact: 'Felix Schuck, Obere Steigstr. 14, 97276 Margetshöchheim' };
 $('#privacyWho').textContent = CLUB.name + (CLUB.contact ? ', Kontakt: ' + CLUB.contact : '');
 // Versionsnummer: jede Änderung zählt um 0.1 hoch (V1.0 … V1.9, dann V2.0 …); Änderungen stehen in CHANGELOG.md
-const APP_VERSION = '3.5';
+const APP_VERSION = '3.6';
 document.getElementById('appVersion').textContent = 'V' + APP_VERSION;
 const saved = store.get();
 function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }
@@ -2869,7 +2870,7 @@ function landHtml(t) {
 }
 // Plant die Teams der genannten Orte, Ort für Ort. Bereits geplante Trails (auch anderer Orte und fixedLLs)
 // sind Hindernisse, weil sich die Suchkreise benachbarter Orte überlappen können.
-async function planPlaces(placeIds, mode, fixedLLs = []) {
+async function planPlaces(placeIds, mode, fixedLLs = [], starR = 50) {
   const minDist = +$('#minDist').value, many = state.places.length > 1;
   const placed = fixedLLs.slice(), byTeam = new Map(), pools = {}, inOrder = [], chainInfo = [], starInfo = [];
   let noAreas = false;
@@ -2891,7 +2892,7 @@ async function planPlaces(placeIds, mode, fixedLLs = []) {
     let out;
     try {
       out = await searchPlace(G, { ...opt, pid, label: many ? placeLabel(place) + ': ' : '', seed: state.seed, mode, minDist, teams, obstacles: obst,
-        levels: [...new Set(teams.map(t => t.level))], star: mode === 'training' && $('#starMode').checked });
+        levels: [...new Set(teams.map(t => t.level))], star: mode === 'training' && $('#starMode').checked, starR });
     } catch (e) { if (e && e.cancelled) return CANCELLED; throw e; }
     if (search.stop) return CANCELLED;   // Abbruch, während die Seite selbst rechnete (ohne Worker)
     const p = out.pools;
@@ -2913,14 +2914,15 @@ async function planPlaces(placeIds, mode, fixedLLs = []) {
         continue;
       }
     } else res = out.plans;
-    if (out.star && out.star.found) starInfo.push({ place: placeLabel(place), parking: out.star.parking });
+    if (out.star && out.star.found) starInfo.push({ place: placeLabel(place), parking: out.star.parking, r: out.star.r });
     if (!res.plans.length) {
       const pre = many ? `${placeLabel(place)}: ` : '';
       const emptyLv = Object.keys(p).find(lv => !p[lv].list.length);
       let msg;
       if (out.star) {
         const wider = place.terrain === 'ort' ? ` In der Ortsliste bei Ort ${place.id} das Gelände „Ort und Ortsrand“ wählen oder` : place.terrain === 'mix' ? ` In der Ortsliste bei Ort ${place.id} das Gelände „Auch Feld und Wald“ wählen oder` : '';
-        msg = `${pre}Ich habe im Suchgebiet keinen Startpunkt gefunden, von dem aus alle ${teams.length} Trails sternförmig passen (${out.star.centers} Parkplätze und Kreuzungen geprüft).${wider} weniger Trails, kleineren Abstand oder ein größeres Suchgebiet wählen.`;
+        msg = `${pre}Ich habe im Suchgebiet keinen Startpunkt gefunden, von dem aus alle ${teams.length} Trails sternförmig ohne Überschneidung passen (Startkreis ${out.star.r} m, ${out.star.centers} Parkplätze und Kreuzungen geprüft).${wider} weniger Trails, kleineren Abstand oder ein größeres Suchgebiet wählen.`;
+        return { ok: false, msg, starFail: true, starR: out.star.r };
       } else if (emptyLv) {
         const top = Object.entries(p[emptyLv].reasons).sort((a, b) => b[1] - a[1]).slice(0, 2).map(x => x[0]).join(', ');
         const tip = place.terrain === 'ort' ? `In der Ortsliste bei Ort ${place.id} statt „Nur im Ort“ das Gelände „Ort und Ortsrand“ wählen oder` : '';
@@ -2940,7 +2942,7 @@ async function planPlaces(placeIds, mode, fixedLLs = []) {
 // Startpunkte der Sterne für die Statuszeile
 function starStatus(info) {
   if (!info || !info.length) return '';
-  return ' ' + info.map(x => `${info.length > 1 ? x.place + ': ' : ''}Stern ${x.parking ? 'an einem Parkplatz' : 'an einer Kreuzung (kein passender Parkplatz im Suchgebiet)'}`).join(' · ') + '.';
+  return ' ' + info.map(x => `${info.length > 1 ? x.place + ': ' : ''}Stern ${x.parking ? 'an einem Parkplatz' : 'an einer Kreuzung (kein passender Parkplatz im Suchgebiet)'}${x.r > 50 ? `, Startkreis ${x.r} m` : ''}`).join(' · ') + '.';
 }
 
 // Zusammenfassung der Ketten für die Statuszeile
@@ -2948,18 +2950,27 @@ function chainStatus(info) {
   if (!info || !info.length) return '';
   return ' ' + info.map(x => `${info.length > 1 ? x.place + ': ' : ''}${x.n < 2 ? 'nur ein Trail' : x.gaps === 0 ? 'Kette ohne Lücke' : x.gaps >= x.n - 1 ? 'keine Kette möglich (Fußwege zu lang oder über spätere Trails)' : `Kette mit ${x.gaps} Lücke${x.gaps === 1 ? '' : 'n'}`}`).join(' · ') + '.';
 }
-async function run() {
+// starR: Startkreis der Sternplanung für diesen einen Durchgang (Vorschlag aus der Meldung, sonst 50 m)
+async function run(starR = 50) {
   if (search.busy) return;
+  if (typeof starR !== 'number') starR = 50;
   const ids = state.places.filter(p => state.teams.some(t => t.place === p.id)).map(p => p.id);
   if (planMode === 'pruefung' && state.exam && !confirm('Neu planen verwirft den aktuellen Prüfungsstand. Fortfahren?')) return;
+  notice('star');
   searchBegin();
   try {
     radarStart(state.places.filter(p => ids.includes(p.id)));
-    const r = await planPlaces(ids, planMode);
+    const r = await planPlaces(ids, planMode, [], starR);
     if (r.cancelled) { setStatus('Suche abgebrochen. Der bisherige Stand bleibt.'); return; }
     if (!r.ok) {
       state.plans = []; state.pools = null; state.planTeams = null;
       renderResults(); setStatus(r.msg, true);
+      // Stern passt nicht: größeren Startkreis anbieten (nur für einen Durchgang) oder auf zwei Orte verteilen
+      if (r.starFail) {
+        const bigger = [75, 100].filter(x => x > r.starR);
+        notice('star', `Vorschlag: ${bigger.length ? 'mit größerem Startkreis noch einmal planen (außerhalb des Kreises weiter ohne Überschneidung) oder ' : ''}die Trails auf zwei Orte verteilen („+ weiteren Ort“ und die Teams aufteilen), dann gibt es zwei Sterne.`,
+          bigger.map(x => [`Mit ${x}-m-Startkreis versuchen`, () => run(x)]));
+      }
       return;
     }
     state.plans = [r.plan]; state.active = 0; state.pools = r.pools; state.planTeams = r.teams;
@@ -3051,12 +3062,12 @@ function drawPlan() {
     L.marker(ll[0], { icon: icon('', color, 'S' + (i + 1)) }).bindTooltip(`Trail ${i + 1} · ${esc(state.planTeams[i].name)}: Start`).addTo(trailLayer);
     L.marker(ll[ll.length - 1], { icon: icon('lf-end', color, 'Z' + (i + 1)) }).bindTooltip(`Trail ${i + 1} · ${esc(state.planTeams[i].name)}: Ziel`).addTo(trailLayer);
   });
-  // Gemeinsamer Startpunkt der Sternplanung mit 50-m-Kreis
+  // Gemeinsamer Startpunkt der Sternplanung mit Startkreis
   const stars = new Map();
   plan.forEach(c => { if (c.star) stars.set(c.place + c.star.p.join(), c); });
   for (const c of stars.values()) {
     const ll = c.G.toLatLon(c.star.p);
-    L.circle(ll, { radius: 50, color: '#1d2620', weight: 2, dashArray: '4 4', fill: false, interactive: false }).addTo(trailLayer);
+    L.circle(ll, { radius: c.star.r || 50, color: '#1d2620', weight: 2, dashArray: '4 4', fill: false, interactive: false }).addTo(trailLayer);
     L.marker(ll, { icon: icon('', '#1d2620', c.star.parking ? 'P' : '✱'), zIndexOffset: -500 })   // Startmarken der Trails bleiben obenauf
       .bindTooltip(c.star.parking ? 'Gemeinsamer Startpunkt: Parkplatz' : 'Gemeinsamer Startpunkt: Kreuzung').addTo(trailLayer);
   }
@@ -4156,7 +4167,7 @@ function renderResults() {
       <div class="card-head"><span class="dot num" style="background:${COLORS[i % COLORS.length]}">${i + 1}</span>
         <span class="name"></span><span class="chip">${c.tr.level}</span>
         <span class="lay">legen bis <b>${layTime(c.tr.level)}</b></span></div>
-      <div class="stats"><span><b>${Math.round(v.length)}</b> m</span><span><b>${v.turns}</b> Richtungswechsel</span><span><b>${v.extraDecisions}</b> zusätzliche Entscheidungsstelle${v.extraDecisions === 1 ? '' : 'n'}</span><span><b>${v.crossings}</b> Kreuzung${v.crossings === 1 ? '' : 'en'}</span><span>Suchzeit <b>${lv.searchMin}</b> min</span>${c.star ? `<span>Start <b>${Math.round(Math.hypot(c.v.pts[0][0] - c.star.p[0], c.v.pts[0][1] - c.star.p[1]))}</b> m vom ${c.star.parking ? 'Parkplatz' : 'gemeinsamen Startpunkt'}</span>` : ''}</div>
+      <div class="stats"><span><b>${Math.round(v.length)}</b> m</span><span><b>${v.turns}</b> Richtungswechsel</span><span><b>${v.extraDecisions}</b> zusätzliche Entscheidungsstelle${v.extraDecisions === 1 ? '' : 'n'}</span><span><b>${v.crossings}</b> Kreuzung${v.crossings === 1 ? '' : 'en'}</span><span>Suchzeit <b>${lv.searchMin}</b> min</span>${c.star ? `<span>Start <b>${Math.round(Math.hypot(c.v.pts[0][0] - c.star.p[0], c.v.pts[0][1] - c.star.p[1]))}</b> m vom ${c.star.parking ? 'Parkplatz' : 'gemeinsamen Startpunkt'}${c.star.r > 50 ? ` (Startkreis ${c.star.r} m)` : ''}</span>` : ''}</div>
       ${warn}
       <details class="checks"><summary style="color:var(${allOk ? '--ok' : hardOk ? '--warn' : '--bad'})">${allOk ? '✓' : hardOk ? '⚠' : '✕'} Regelprüfung: ${v.checks.filter(x => x.ok).length} von ${v.checks.length} Punkten erfüllt</summary><ul></ul></details>
       <details class="checks steps-box"><summary>Trailverlauf: ${steps.length} Schritte</summary><ol class="steps"></ol></details>
