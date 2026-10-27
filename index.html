@@ -2197,7 +2197,7 @@ const store = {
 const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946], contact: 'Felix Schuck, Obere Steigstr. 14, 97276 Margetshöchheim' };
 $('#privacyWho').textContent = CLUB.name + (CLUB.contact ? ', Kontakt: ' + CLUB.contact : '');
 // Versionsnummer: jede Änderung zählt um 0.1 hoch (V1.0 … V1.9, dann V2.0 …); Änderungen stehen in CHANGELOG.md
-const APP_VERSION = '3.3';
+const APP_VERSION = '3.4';
 document.getElementById('appVersion').textContent = 'V' + APP_VERSION;
 const saved = store.get();
 function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }
@@ -2205,7 +2205,7 @@ function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' },
 const PLACE_COLORS = { A: '#e8590c', B: '#1c7ed6', C: '#2f9e44', D: '#7048e8' };
 const TERRAIN_LABELS = { ort: 'Nur im Ort', mix: 'Ort und Ortsrand', frei: 'Auch Feld und Wald' };
 const RADII = [400, 600, 800, 1200, 1600, 2200];   // Stufen für die automatische Ortserkennung beim GPX-Import
-const RADIUS_MIN = 300, RADIUS_MAX = 2500, RADIUS_STEP = 100;   // Schieberegler Suchgebiet
+const RADIUS_MIN = 300, RADIUS_MAX = 5000, RADIUS_STEP = 100;   // Schieberegler Suchgebiet
 const radiusLabel = r => (r < 1000 ? `${r} m` : `${String(r / 1000).replace('.', ',')} km`);
 const blankPlace = id => ({ id, name: '', center: null, terrain: 'ort', radius: 1200 });
 function initialPlaces() {

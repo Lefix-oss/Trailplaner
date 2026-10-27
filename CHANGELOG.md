@@ -2,6 +2,10 @@
 
 Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Die aktuelle Version steht in der App neben der Überschrift.
 
+## V3.4 – 27.10.2026
+
+- Suchgebiet bis 5 km statt 2,5 km. Große Kreise brauchen beim ersten Laden der Wege und bei der Suche länger.
+
 ## V3.3 – 27.10.2026
 
 - **Suchgebiet per Schieberegler:** Statt der festen Stufen (400 m bis 2,2 km) lässt sich das Suchgebiet je Ort frei von 300 m bis 2,5 km in 100-m-Schritten einstellen. Der Kreis auf der Karte folgt beim Ziehen, übernommen wird beim Loslassen. Jeder neue Radius lädt die Wege einmal von OpenStreetMap (danach aus dem Zwischenspeicher; im Bereich Giebelstadt/Essfeld aus dem festen Auszug, solange der Kreis hineinpasst).
