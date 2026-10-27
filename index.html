@@ -154,6 +154,9 @@ button.small { font-size: 13px; padding: 7px 10px; }
 .test-tag { font-size: 11px; color: var(--muted); text-transform: uppercase; letter-spacing: .06em; }
 .status { font-size: 14px; color: var(--muted); min-height: 1.4em; margin: 8px 0 0; }
 .status.err { color: var(--bad); }
+.notice p { margin: 0; }
+.notice p + p { margin-top: 8px; }
+.notice button { margin: 6px 6px 0 0; }
 
 /* Ergebnisse */
 .cards { display: grid; gap: 14px; margin-top: 12px; }
@@ -369,6 +372,7 @@ details.privacy p { margin: 6px 0 0; }
         <input id="importFile" type="file" accept=".gpx,application/gpx+xml,application/xml,text/xml" multiple hidden>
       </div>
       <p id="status" class="status" role="status"></p>
+      <div id="notice" class="warnbox notice" role="alert" hidden></div>
     </section>
 
     <section id="importPanel" class="imp" hidden aria-label="Trails aus GPX-Dateien importieren"></section>
@@ -2056,16 +2060,21 @@ const Pruefung = (() => {
   }
 
   function serializeExam(exam) { return JSON.stringify(exam, null, 1); }
+  // Obergrenzen für geöffnete Prüfungsstände (weit über dem, was ein Prüfungstag braucht)
+  const EXAM_LIMITS = { trails: 60, points: 5000, steps: 300, names: 100, nameLen: 200 };
 
   function parseExam(text) {
     const notOurs = () => new Error('Die Datei ist kein gespeicherter Trailplan.');
     let ex;
     try { ex = JSON.parse(text); } catch { throw notOurs(); }
     if (!ex || typeof ex !== 'object' || ex.format !== FORMAT) throw notOurs();
-    if (!(ex.version <= VERSION)) throw new Error('Diese Datei stammt aus einer neueren Version des Trailplaners.');
+    if (!Number.isInteger(ex.version) || ex.version < 1) throw notOurs();
+    if (ex.version > VERSION) throw new Error('Diese Datei stammt aus einer neueren Version des Trailplaners.');
     if (!Array.isArray(ex.trails)) throw notOurs();
+    if (ex.trails.length > EXAM_LIMITS.trails) throw new Error(`Die Datei ist beschädigt: mehr als ${EXAM_LIMITS.trails} Trails.`);
     const num = v => typeof v === 'number' && isFinite(v);
-    const okCenter = c => c && num(c.lat) && num(c.lon);
+    const okLL = (lat, lon) => num(lat) && num(lon) && Math.abs(lat) <= 90 && Math.abs(lon) <= 180;
+    const okCenter = c => c && okLL(c.lat, c.lon);
     if (ex.version < 2) {
       // Version 1: ein Ort, Name und Mitte im Kopf, Gelände in den Einstellungen
       if (ex.center !== undefined && !okCenter(ex.center)) throw new Error('Die Datei ist beschädigt: Ortsmitte fehlt.');
@@ -2083,20 +2092,21 @@ const Pruefung = (() => {
     const defRadius = (ex.settings && +ex.settings.radius) || 1200;
     ex.places.forEach(p => { if (!(+p.radius > 0)) p.radius = defRadius; });
     const ids = ex.places.map(p => p.id);
+    if (new Set(ids).size !== ids.length || !ex.places.every(p => p.name === undefined || (typeof p.name === 'string' && p.name.length <= 200))) throw new Error('Die Datei ist beschädigt: Ortsliste fehlerhaft.');
+    const pts = a => Array.isArray(a) && a.length <= EXAM_LIMITS.points && a.every(p => Array.isArray(p) && p.length >= 2 && okLL(p[0], p[1]));
     ex.trails.forEach((t, i) => {
       if (t && !ids.includes(t.place)) throw new Error(`Die Datei ist beschädigt: Trail ${i + 1} ist beschädigt.`);
-      const pt = p => Array.isArray(p) && p.length >= 2 && num(p[0]) && num(p[1]);
-      if (!t || !Array.isArray(t.ll) || t.ll.length < 2 || !t.ll.every(pt)) throw new Error(`Die Datei ist beschädigt: Trail ${i + 1} hat keine Strecke.`);
+      if (!t || !pts(t.ll) || t.ll.length < 2) throw new Error(`Die Datei ist beschädigt: Trail ${i + 1} hat keine Strecke.`);
       if (!LEVEL_KEYS.includes(t.level) || (t.steps !== undefined && !Array.isArray(t.steps))) throw new Error(`Die Datei ist beschädigt: Trail ${i + 1} ist beschädigt.`);
       // Zahlen und Texte prüfen: sie werden später in die Seite geschrieben, eine fremde Datei darf dort nichts einschleusen
       const bad = () => new Error(`Die Datei ist beschädigt: Trail ${i + 1} ist beschädigt.`);
       for (const k of ['length', 'turns', 'decisions', 'crossings']) { if (t[k] === undefined) t[k] = 0; else if (!num(t[k])) throw bad(); }
       if (t.link !== undefined && t.link !== null) {
-        if (typeof t.link !== 'object' || !num(t.link.dist) || (t.link.ll != null && !(Array.isArray(t.link.ll) && t.link.ll.every(pt)))) throw bad();
+        if (typeof t.link !== 'object' || !num(t.link.dist) || (t.link.ll != null && !pts(t.link.ll))) throw bad();
         if (t.link.note !== undefined && !(typeof t.link.note === 'string' && t.link.note.length <= 300)) throw bad();
         if (t.link.pending !== undefined && typeof t.link.pending !== 'boolean') throw bad();
       }
-      if (t.steps !== undefined && !t.steps.every(s => s && typeof s === 'object' && num(s.at) && (s.options === undefined || num(s.options)) && typeof s.text === 'string' && typeof s.kind === 'string')) throw bad();
+      if (t.steps !== undefined && !(t.steps.length <= EXAM_LIMITS.steps && t.steps.every(s => s && typeof s === 'object' && num(s.at) && (s.options === undefined || num(s.options)) && typeof s.text === 'string' && s.text.length <= 300 && typeof s.kind === 'string' && s.kind.length <= 20))) throw bad();
       if (t.imported !== undefined && typeof t.imported !== 'boolean') throw bad();
       if (t.name !== undefined && (typeof t.name !== 'string' || t.name.length > 80)) throw bad();
       if (t.file !== undefined && (typeof t.file !== 'string' || t.file.length > 120)) throw bad();
@@ -2108,11 +2118,15 @@ const Pruefung = (() => {
       if (typeof t.harder !== 'string') t.harder = '';
     });
     if (ex.chainStale !== true) delete ex.chainStale;
+    // Namen und Zuteilung: nur kurze Texte, begrenzte Anzahl
+    const okName = s => typeof s === 'string' && s.length <= EXAM_LIMITS.nameLen;
+    const nameList = a => { if (a === undefined) return []; if (!Array.isArray(a) || a.length > EXAM_LIMITS.names || !a.every(okName)) throw new Error('Die Datei ist beschädigt: Namensliste fehlerhaft.'); return a; };
     const names = ex.names || {};
     const teams = names.teams || {};
-    ex.names = { teams: Object.fromEntries(LEVEL_KEYS.map(k => [k, Array.isArray(teams[k]) ? teams[k] : []])), vps: Array.isArray(names.vps) ? names.vps : [] };
+    ex.names = { teams: Object.fromEntries(LEVEL_KEYS.map(k => [k, nameList(teams[k])])), vps: nameList(names.vps) };
     const assign = Array.isArray(ex.assign) ? ex.assign : [];
-    ex.assign = ex.trails.map((_, i) => ({ team: (assign[i] && assign[i].team) || '', vp: (assign[i] && assign[i].vp) || '' }));
+    const cell = v => { if (v === undefined || v === null || v === '') return ''; if (!okName(v)) throw new Error('Die Datei ist beschädigt: Zuteilung fehlerhaft.'); return v; };
+    ex.assign = ex.trails.map((_, i) => ({ team: cell(assign[i] && assign[i].team), vp: cell(assign[i] && assign[i].vp) }));
     return ex;
   }
 
@@ -2134,7 +2148,7 @@ const store = {
 const CLUB = { name: 'Hundesportverein Giebelstadt e.V.', short: 'HSV Giebelstadt', home: [49.651, 9.946], contact: '' };
 $('#privacyWho').textContent = CLUB.name + (CLUB.contact ? ', Kontakt: ' + CLUB.contact : '');
 // Versionsnummer: jede Änderung zählt um 0.1 hoch (V1.0 … V1.9, dann V2.0 …); Änderungen stehen in CHANGELOG.md
-const APP_VERSION = '2.8';
+const APP_VERSION = '2.9';
 document.getElementById('appVersion').textContent = 'V' + APP_VERSION;
 const saved = store.get();
 function defaultTeams() { return [{ name: 'Team 1', level: 'MT-I', place: 'A' }, { name: 'Team 2', level: 'MT-II', place: 'A' }, { name: 'Team 3', level: 'MT-II', place: 'A' }]; }
@@ -2332,7 +2346,7 @@ $('#refreshOSM').addEventListener('click', async () => {
   if (!p.center) { setStatus(`Für Ort ${p.id} ist noch keine Ortschaft gewählt.`, true); return; }
   btn.disabled = true; setStatus(`Lade Wege für ${placeLabel(p)} neu von OpenStreetMap …`);
   try {
-    await loadOSM(p.center, p.radius, true);
+    await loadOSM(p.center, p.radius, true, placeLabel(p));
     state.graphs.delete(Pruefung.osmKey(p.center, p.radius)); invalidate();
     setStatus(`Wegedaten für ${placeLabel(p)} aktualisiert (Stand heute).`);
   } catch { setStatus('OpenStreetMap ist gerade nicht erreichbar oder überlastet. Die bisherigen Wegedaten bleiben in Gebrauch.', true); }
@@ -2441,7 +2455,7 @@ async function loadExtract(c, radius) {
   }
   const x = Pruefung.findExtract(extractManifest, Pruefung.osmBBox(c, radius));
   if (!x) return null;
-  try { const r = await fetch('data/osm/' + x.file); return r.ok ? await r.json() : null; } catch { return null; }
+  try { const r = await fetch('data/osm/' + x.file); return r.ok ? { data: await r.json(), savedAt: Date.parse(x.savedAt) } : null; } catch { return null; }
 }
 // Wegedaten bleiben im Browser (IndexedDB), damit Planen und „Ersetzen“ nicht jedes Mal auf überlastete Server warten
 const osmCache = {
@@ -2460,36 +2474,57 @@ const osmCache = {
   },
   async set(key, val) { try { const db = await this.open(); db.transaction('osm', 'readwrite').objectStore('osm').put(val, key); } catch {} },
 };
-// Reihenfolge: frisch Gespeichertes im Browser, fester Auszug, Server; refresh holt immer neu vom Server
-async function loadOSM(c, radius, refresh = false) {
+// Reihenfolge: frisch Gespeichertes im Browser, fester Auszug, Server; refresh holt immer neu vom Server.
+// Ältere Daten (Ersatz bei Serverausfall, Auszug älter als die Frist des Zwischenspeichers) bekommen einen dauerhaften Hinweis.
+async function loadOSM(c, radius, refresh = false, label = '') {
   const key = Pruefung.osmKey(c, radius), cached = await osmCache.get(key);
-  if (!refresh && cached && Pruefung.osmFresh(cached.savedAt, Date.now())) return cached.data;
-  if (!refresh) { const ex = await loadExtract(c, radius); if (ex) return ex; }
+  const day = t => new Date(t).toLocaleDateString('de-DE'), who = label ? ` für ${label}` : '';
+  const note = text => notice('osm:' + key, text ? `Wegedaten${who}: ${text}` : '');
+  if (!refresh && cached && Pruefung.osmFresh(cached.savedAt, Date.now())) { note(''); return cached.data; }
+  if (!refresh) {
+    const ex = await loadExtract(c, radius);
+    if (ex) {
+      note(Pruefung.osmFresh(ex.savedAt, Date.now()) ? '' : `fester Auszug vom ${day(ex.savedAt)}. Wege können sich seitdem geändert haben; „Wegedaten neu laden“ holt den aktuellen Stand.`);
+      return ex.data;
+    }
+  }
   try {
     const data = await fetchOSM(c, radius);
     osmCache.set(key, { savedAt: Date.now(), data });
+    note('');
     return data;
   } catch (e) {
-    if (cached && !refresh) return cached.data;   // Server alle überlastet: lieber ältere Daten als gar keine
+    if (cached && !refresh) {   // Server alle überlastet: lieber ältere Daten als gar keine, aber mit Hinweis
+      note(`Server nicht erreichbar, im Browser gespeicherter Stand vom ${day(cached.savedAt)} wird verwendet. Später „Wegedaten neu laden“.`);
+      return cached.data;
+    }
     throw e;
   }
 }
-// Alle Server gleichzeitig fragen, die erste vollständige Antwort gewinnt; nach 65 s wird abgebrochen
+// Ein Server nach dem anderen: der nächste kommt erst nach 8 s ohne Antwort oder sofort nach einem Fehler dazu
+// (schont die freien Server); die erste vollständige Antwort gewinnt, nach 65 s wird abgebrochen
+const OVERPASS_STAGGER = 8000;
 const fetchOSM = (c, radius) => fetchOverpass(Pruefung.overpassQuery(Pruefung.osmBBox(c, radius)));
 async function fetchOverpass(q) {
   const ctls = OVERPASS.map(() => new AbortController());
-  const timer = setTimeout(() => ctls.forEach(x => x.abort()), 65000);
+  const gates = OVERPASS.map(() => { let open; const p = new Promise(r => { open = r; }); return { p, open }; });
+  const timers = OVERPASS.map((_, k) => (k ? setTimeout(gates[k].open, k * OVERPASS_STAGGER) : (gates[0].open(), null)));
+  timers.push(setTimeout(() => { ctls.forEach(x => x.abort()); gates.forEach(g => g.open()); }, 65000));
   try {
     return await Promise.any(OVERPASS.map(async (url, k) => {
-      const r = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal: ctls[k].signal });
-      if (!r.ok) throw new Error('HTTP ' + r.status);
-      const data = await r.json();
-      // Bei Zeitüberschreitung liefert Overpass oft nur einen Teil der Daten mit einem Hinweis
-      if (!data || !Array.isArray(data.elements) || /error/i.test(data.remark || '')) throw new Error('unvollständig');
-      return data;
+      await gates[k].p;
+      try {
+        if (ctls[k].signal.aborted) throw new Error('abgebrochen');
+        const r = await fetch(url, { method: 'POST', body: 'data=' + encodeURIComponent(q), headers: { 'Content-Type': 'application/x-www-form-urlencoded' }, signal: ctls[k].signal });
+        if (!r.ok) throw new Error('HTTP ' + r.status);
+        const data = await r.json();
+        // Bei Zeitüberschreitung liefert Overpass oft nur einen Teil der Daten mit einem Hinweis
+        if (!data || !Array.isArray(data.elements) || /error/i.test(data.remark || '')) throw new Error('unvollständig');
+        return data;
+      } catch (e) { if (gates[k + 1]) gates[k + 1].open(); throw e; }
     }));
   } catch (e) { throw (e && e.errors && e.errors[0]) || e; }
-  finally { clearTimeout(timer); ctls.forEach(x => x.abort()); }
+  finally { timers.forEach(t => t && clearTimeout(t)); ctls.forEach(x => x.abort()); gates.forEach(g => g.open()); }
 }
 const tick = () => new Promise(r => setTimeout(r, 20));
 function setStatus(t, err = false) { const s = $('#status'); s.textContent = t; s.classList.toggle('err', err); }
@@ -2502,7 +2537,7 @@ async function graphFor(place, radius) {
   const key = Pruefung.osmKey(place.center, radius);
   if (!state.graphs.has(key)) {
     setStatus(`Lade Wege für ${placeLabel(place)} aus OpenStreetMap …`);
-    const osm = await loadOSM(place.center, radius);
+    const osm = await loadOSM(place.center, radius, false, placeLabel(place));
     setStatus('Baue Wegenetz …'); await tick();
     state.graphs.set(key, Planner.buildGraph(osm, place.center, radius));
   }
@@ -2789,10 +2824,38 @@ function startExam() {
   persistExam();
 }
 // Laufender Stand zusätzlich im Browser, damit ein Absturz nichts kostet
-const EXAM_KEY = 'trailplaner-pruefung';
+const EXAM_KEY = 'trailplaner-pruefung', RESCUE_KEY = 'trailplaner-pruefung-sicherung';
+// Dauerhafte Meldungen unter dem Status (Speicherfehler, aufgehobene Sicherung, ältere Wegedaten); bleiben, bis sie erledigt sind
+const notices = new Map();
+function notice(key, text, actions = []) {
+  if (text) notices.set(key, { text, actions }); else notices.delete(key);
+  const box = $('#notice'); box.innerHTML = ''; box.hidden = !notices.size;
+  for (const n of notices.values()) {
+    const p = document.createElement('p'); p.textContent = n.text;
+    if (n.actions.length) { p.append(document.createElement('br')); n.actions.forEach(([label, fn]) => p.append(mk(label, fn))); }
+    box.append(p);
+  }
+}
 function persistExam() {
-  try { if (state.exam) localStorage.setItem(EXAM_KEY, Pruefung.serializeExam(state.exam)); } catch {}
+  if (state.exam) {
+    try { localStorage.setItem(EXAM_KEY, Pruefung.serializeExam(state.exam)); notice('save'); }
+    catch { notice('save', 'Achtung: Der Prüfungsstand ließ sich nicht im Browser speichern (Speicher voll oder gesperrt, z. B. im privaten Fenster). Bitte als Datei sichern, sonst geht er beim Schließen der Seite verloren.', [['Als Datei speichern', saveExamFile]]); }
+  }
   updateExamBar();
+}
+// Ein gespeicherter Stand, der sich nicht öffnen ließ, wird nicht gelöscht, sondern aufgehoben, bis er heruntergeladen oder verworfen ist
+function rescueExam(raw) {
+  let kept = false;
+  try { localStorage.setItem(RESCUE_KEY, raw); kept = true; } catch {}
+  showRescue(raw);
+  return kept;
+}
+function showRescue(raw) {
+  if (raw === undefined) try { raw = localStorage.getItem(RESCUE_KEY); } catch {}
+  if (!raw) { notice('rescue'); return; }
+  notice('rescue', 'Ein im Browser gespeicherter Prüfungsstand ließ sich nicht öffnen. Er ist als Sicherung aufgehoben.', [
+    ['Sicherung herunterladen', () => download('Trailplan_Sicherung.json', raw, 'application/json')],
+    ['Verwerfen', () => { if (!confirm('Die Sicherung endgültig verwerfen?')) return; try { localStorage.removeItem(RESCUE_KEY); } catch {} notice('rescue'); }]]);
 }
 function updateExamBar() {
   $('#examBar').hidden = planMode !== 'pruefung';
@@ -3849,18 +3912,21 @@ function linkBtn(label, href) {
 function mk(label, fn) { const b = document.createElement('button'); b.type = 'button'; b.className = 'small'; b.textContent = label; b.onclick = fn; return b; }
 function esc(s) { return String(s).replace(/[&<>"]/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' }[c])); }
 
-// Letzten Prüfungsstand still wiederherstellen; eine kaputte Sicherung wird ignoriert
+// Letzten Prüfungsstand still wiederherstellen; einer, der sich nicht öffnen lässt, wird als Sicherung aufgehoben
 {
-  let ex = null;
-  try { const raw = localStorage.getItem(EXAM_KEY); if (raw) ex = Pruefung.parseExam(raw); } catch {}
+  let ex = null, raw = null;
+  try { raw = localStorage.getItem(EXAM_KEY); } catch {}
+  const drop = () => { if (rescueExam(raw)) try { localStorage.removeItem(EXAM_KEY); } catch {} };
+  if (raw) try { ex = Pruefung.parseExam(raw); } catch (e) { console.error(e); drop(); }
   try {
     if (ex && planMode === 'pruefung') { applyExam(ex, true); setStatus(`Letzter Prüfungsstand wiederhergestellt (${ex.trails.length} Trails).`); }
     else if (ex) { state.exam = ex; state.examSeen = ex.trails.map(() => new Set()); updateExamBar(); }
   } catch (e) {
     console.error(e);
-    state.exam = null; try { localStorage.removeItem(EXAM_KEY); } catch {}
+    state.exam = null; drop();
     renderResults(); updateExamBar();
   }
+  if (!notices.has('rescue')) showRescue();
 }
 })();
 </script>

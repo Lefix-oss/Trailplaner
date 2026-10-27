@@ -2,6 +2,17 @@
 
 Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Die aktuelle Version steht in der App neben der Überschrift.
 
+## V2.9 – 27.10.2026
+
+Robustheit nach externem Review: Speichern, Dateiprüfung, Serverabfragen, ältere Kartendaten.
+
+- **Speicherfehler sichtbar:** Lässt sich der Prüfungsstand nicht im Browser speichern (Speicher voll oder gesperrt, z. B. im privaten Fenster), erscheint eine dauerhafte Warnung mit dem Knopf „Als Datei speichern“. Sie verschwindet beim nächsten erfolgreichen Speichern.
+- **Sicherung bleibt erhalten:** Ein im Browser gespeicherter Stand, der sich beim Seitenstart nicht öffnen lässt, wird nicht mehr gelöscht, sondern als Sicherung aufgehoben („Sicherung herunterladen“ oder „Verwerfen“ mit Rückfrage). Der Hinweis erscheint bei jedem Seitenaufruf, bis die Sicherung verworfen ist.
+- **Strengere Prüfung geöffneter Dateien:** Koordinaten müssen gültige Breiten- und Längengrade sein; höchstens 60 Trails, 5000 Streckenpunkte je Trail, 300 Schritte im Trailverlauf; Namen und Zuteilungen müssen kurze Texte sein (höchstens 100 Namen je Liste, je 200 Zeichen); Ort-Kennungen eindeutig; Dateiversion ganzzahlig.
+- **Overpass-Server werden nacheinander gefragt:** zuerst einer, der nächste erst nach 8 Sekunden ohne Antwort oder sofort nach einem Fehler. Das schont die kostenlosen Server; im schlechtesten Fall dauert eine Abfrage etwas länger.
+- **Hinweis bei älteren Wegedaten:** Sind die Server nicht erreichbar und die App nimmt den im Browser gespeicherten Stand, steht dauerhaft „Wegedaten für …: Server nicht erreichbar, gespeicherter Stand vom … wird verwendet“. Ebenso, wenn der feste Auszug älter als 14 Tage ist. „Wegedaten neu laden“ entfernt den Hinweis, sobald es klappt.
+- Mehrere solche Meldungen stehen gesammelt unter der Statuszeile.
+
 ## V2.8 – 27.10.2026
 
 Kreuzungen bei MT-II als Pflicht (PO: „Kreuzungen“ im Gelände von MT-II und MT-III).

@@ -415,3 +415,24 @@ test('parseExam behält Geländeanteile und lehnt Werte außerhalb von 0–100 a
   const bad2 = JSON.parse(Pruefung.serializeExam(exam)); delete bad2.trails[0].land.ohne;
   assert.throws(() => Pruefung.parseExam(JSON.stringify(bad2)), /beschädigt/);
 });
+
+test('parseExam (V2.9): Koordinaten, Anzahl, Ort-Kennungen, Namen und Version werden geprüft', () => {
+  const base = () => ({ format: 'trailplaner-pruefung', version: 2, savedAt: null,
+    places: [{ id: 'A', name: 'Musterdorf', center: { lat: 49.65, lon: 9.95 }, terrain: 'ort', radius: 1200 }], settings: {}, date: '2026-10-31',
+    trails: [{ level: 'MT-I', ll: [[49.65, 9.95], [49.651, 9.951]], length: 305, turns: 1, decisions: 1, crossings: 1, steps: [], startStreet: 'A', endStreet: 'B', checked: false, harder: '', place: 'A' }],
+    names: { teams: { 'MT-I': ['Anna mit Luna'], 'MT-II': [], 'MT-III': [] }, vps: ['VP1'] }, assign: [{ team: 'Anna mit Luna', vp: 'VP1' }] });
+  const bad = (change, re = /beschädigt/) => { const ex = base(); change(ex); assert.throws(() => Pruefung.parseExam(JSON.stringify(ex)), re); };
+  assert.doesNotThrow(() => Pruefung.parseExam(JSON.stringify(base())));
+  bad(ex => { ex.trails[0].ll[1] = [999, 9.95]; });                 // Breite außerhalb ±90
+  bad(ex => { ex.places[0].center.lon = 200; });                    // Länge außerhalb ±180
+  bad(ex => { ex.trails[0].ll = Array.from({ length: 5001 }, (_, i) => [49.65, 9.95 + i * 1e-6]); });
+  bad(ex => { ex.trails = Array.from({ length: 61 }, () => base().trails[0]); ex.assign = []; });
+  bad(ex => { ex.places.push({ id: 'A', center: { lat: 49.7, lon: 9.9 } }); });   // doppelte Ort-Kennung
+  bad(ex => { ex.names.vps = [{ name: 'VP1' }]; });                  // Name kein Text
+  bad(ex => { ex.names.teams['MT-I'] = ['x'.repeat(201)]; });
+  bad(ex => { ex.assign[0].team = 42; });
+  bad(ex => { ex.trails[0].steps = [{ at: 0, kind: 'start', text: 'x'.repeat(301) }]; });
+  bad(ex => { ex.version = '2'; }, /kein gespeicherter Trailplan/);
+  bad(ex => { ex.version = 1.5; }, /kein gespeicherter Trailplan/);
+  bad(ex => { ex.version = 3; }, /neueren Version/);
+});
