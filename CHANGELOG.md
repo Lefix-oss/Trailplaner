@@ -4,16 +4,16 @@ Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 u
 
 ---
 
-# Aktueller Stand und Übergabe (Stand 27.10.2026, wird bei jeder Veröffentlichung aktualisiert)
+# Aktueller Stand und Übergabe (Stand 16.11.2026, wird bei jeder Veröffentlichung aktualisiert)
 
 ## 1. Versions- und Veröffentlichungsstand
-- **Veröffentlicht (GitHub Pages, Zweig `main`):** **V3.9.2**, Commit `239d2d1`. Pages-Lauf am 27.10.2026 erfolgreich, Live-Seite per Abruf geprüft (`APP_VERSION = '3.9.2'`). Vorher live: V3.9.1 (`e7f2408`).
-- **Lokal, noch nicht veröffentlicht:** V3.9.3 (neutraler Trailplaner).
+- **Veröffentlicht (GitHub Pages, Zweig `main`):** **V3.9.3**, Commit `fd65fd7`. Pages-Lauf am 16.11.2026 erfolgreich, Live-Seite per Abruf geprüft. Vorher live: V3.9.2.
+- **Lokal, noch nicht veröffentlicht:** keine weiteren Änderungen an der App.
 - **Rückfallstand:** Tag `v3.6` (Commit `8f490af`, vor der neuen Prüfungskette) ist gepusht. Zurück auf einen Stand per `git revert` des betreffenden Commits auf `main` und Push. Das Speicherformat hat sich seit V3.6 nicht geändert.
 - **Zweige:** `main` = Live-Seite, `entwicklung` = Arbeitsstand. `forschung` (nur lokal, nie pushen) enthält Prototypen, Messreihen und Wegedaten Ochsenfurt (siehe 6). Die Beschlüsse daraus stehen in diesem Dokument.
 - **Ablauf:** Bauen auf `entwicklung` → Tests → Freigabe → Fast-Forward nach `main` → Push → Pages-Lauf über die GitHub-API abwarten.
 
-## 2. Verhalten der Funktionen (V3.9.2)
+## 2. Verhalten der Funktionen (V3.9.3)
 - **Training (Tagesplan):** Je Stufe ein Vorrat von bis zu 45 Kandidaten (`pool`) aus Zufallsläufen und anschließender systematischer Suche (Startpunkte alle 25 m). Daraus wählt eine zufallsgestützte Kombination (`plans`) einen verträglichen Satz. Länge immer genau die Solllänge, Startstücke ab 40 m. „Alternativ-Trail“ je Karte. Erneutes Planen liefert andere Trails (Startwert zählt hoch).
 - **Stern (nur Training, Häkchen „Sternförmig“):** Die App sucht den Startpunkt selbst: zuerst Parkplätze aus OSM (an Fahrgassen erkannt, zusammengefasst im Umkreis von 80 m), sonst Kreuzungen ab 3 Wegen. Geprüft werden je Art bis zu 20 zufällig gewählte Punkte im inneren Kreis (Radius − 150 m), innerhalb von 10 s mit bzw. 20 s ohne Ergebnis. Regeln siehe 3. Kein Stern: Meldung mit Knöpfen „75-m-“ bzw. „100-m-Startkreis versuchen“ (gilt für einen Durchgang, technisch höchstens 150 m) und Hinweis „auf zwei Orte verteilen“.
 - **Automatische Prüfungskette (seit V3.7):** Mit Web Worker läuft die kombinierte Suche mit **30 s Rechenbudget** je Planungslauf, bei mehreren Orten aufgeteilt. Das Laden der Wegedaten zählt nicht mit. Ablauf:
