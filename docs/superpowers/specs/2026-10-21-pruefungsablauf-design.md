@@ -1,6 +1,6 @@
 # Prüfungsablauf im Trailplaner – Konzept
 
-Stand: 21.10.2026 · Prüfung: **Samstag, 31.10.2026** · Verein: Hundesportverein Giebelstadt e.V.
+Stand: 21.10.2026 · Prüfung: **Samstag, 31.10.2026**
 
 ## Worum es geht und warum
 
@@ -58,7 +58,7 @@ Vorlage ist der bisherige Bogen des Vereins (Tabellendokument mit Luftbild-Scree
   - Nordpfeil und Maßstab
   - Pflichtangaben zur Quelle (Luftbild und OpenStreetMap)
   - Der Ausschnitt ist so gewählt, dass der ganze Trail gut lesbar draufpasst.
-- **Fußzeile:** Koordinaten von Start und Ende, dazu „**Trailplaner · HSV Giebelstadt**“ mit dem **Vereinslogo**. Das Logo liegt als SVG schon im Kopf von `index.html` und ist laut Nutzer das richtige.
+- **Fußzeile:** Koordinaten von Start und Ende, dazu „Trailplaner“.
 - Die Straßennamen kommen aus OpenStreetMap, also aus denselben Daten, mit denen der Planer arbeitet. Google Maps wird nicht gebraucht.
 
 ## Testdaten

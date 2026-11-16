@@ -1,6 +1,6 @@
 # Trailplaner für mehrere Vereine – was sich ändern muss
 
-Stand: 21.10.2026 · Status: **nur dokumentiert, nicht umgesetzt**. Zuerst wird die aktuelle Version für den HSV Giebelstadt fertiggestellt.
+Stand: 21.10.2026 · Status: **nur dokumentiert, nicht umgesetzt**.
 
 ## Ziel
 
@@ -18,14 +18,14 @@ Der Trailplaner soll später als kostenpflichtige Anwendung für mehrere Hundesp
 | Server | keiner |
 | Daten | im Browser (`localStorage`) und als JSON-Datei auf dem Laptop (Format `trailplaner-pruefung`, Version 1) |
 | Konten, Lizenz | keine; wer die Adresse kennt, kann die App nutzen |
-| Vereinsbezug | fest auf den HSV Giebelstadt: Logo-SVG im Kopf von `index.html` und Objekt `CLUB` (Name, Kurzname, Kartenmitte) |
+| Darstellung | neutraler Trailplaner ohne fest hinterlegten Anbieter |
 | Kartendaten | öffentliche Overpass-Server (OpenStreetMap), Esri-Kacheln, OSM-Kacheln |
 
 **Was den Umbau schon jetzt erleichtert:**
 
 - Die Planungslogik (`Planner`) und die Prüfungslogik (`Pruefung`) sind frei von DOM-Code und mit Node getestet. Sie lassen sich unverändert in ein Modul oder auf einen Server übernehmen.
 - Das Dateiformat hat eine Kennung und eine Versionsnummer und kann deshalb später importiert und migriert werden.
-- Die vereinsbezogenen Angaben stehen gesammelt in `CLUB` und nicht mehr verstreut im Code. Nur das Logo-SVG im HTML-Kopf ist noch fest eingebaut.
+- Vereinsangaben und Logos können bei einem späteren Mehrvereinsbetrieb je Profil geladen werden.
 
 ## Zielbild
 
@@ -67,7 +67,7 @@ Browser (App)  ──HTTPS + Anmeldung──▶  API-Server  ──▶  Datenban
 
 | Tabelle | Inhalt | Schlüssel |
 |---|---|---|
-| `verein` | Name, Kurzname, Logo, Standard-Kartenmitte (heute `CLUB`) | `id` |
+| `verein` | Name, Kurzname, Logo, Standard-Kartenmitte | `id` |
 | `mitgliedschaft` | Person ↔ Verein, Rolle | `verein_id`, `person_id` |
 | `lizenz` | Status, Laufzeit, Zahlungsanbieter-ID | `verein_id` |
 | `pruefung` | Ort, Mitte, Einstellungen, Datum (heute die Kopfdaten des Exam-Objekts) | `id`, `verein_id` |
@@ -102,7 +102,7 @@ Für einen kostenpflichtigen Dienst reicht die heutige kostenlose Nutzung nicht.
 
 ## 6. Nötige Änderungen am Code (Reihenfolge)
 
-1. **Vereinsangaben auslagern:** Das Logo-SVG aus dem HTML-Kopf ins `CLUB`-Objekt verschieben und `CLUB` später vom Server laden.
+1. **Vereinsprofile ergänzen:** Name, Logo und optionale Kartenmitte je Verein verwalten.
 2. **In Module aufteilen:** Build-Schritt einführen, zum Beispiel Vite. Daraus entstehen die Module `planner`, `pruefung`, `karte`, `ui` und `drucken`. Die bestehenden Node-Tests laufen weiter.
 3. **Speicher-Schicht:** Die heutigen direkten Aufrufe von `localStorage` und Datei-Download hinter einer Schnittstelle bündeln, also `speichern(exam)` und `laden()`. Erst lokal umgesetzt, später über die API.
 4. **API und Datenbank** mit Mandantentrennung, Anmeldung und Rollen.

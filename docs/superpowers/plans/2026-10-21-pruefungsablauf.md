@@ -309,13 +309,13 @@ git commit -m "Zuteil-Tabelle: Teams und Versteckpersonen zuwürfeln oder von Ha
 - Modify: `index.html`, App-Block (neue Funktion `openSheets`), CSS inklusive `@media print` und `@page`
 
 **Interfaces:**
-- Consumes: `state.exam`, `Pruefung.splitTeam`, Logo-SVG aus `header.brand svg.logo`
+- Consumes: `state.exam`, `Pruefung.splitTeam`
 - Produces: `async openSheets()`, Overlay `#sheets`
 
 - [ ] **Step 1: `openSheets()` schreiben.** Sie legt ein Vollbild-Overlay `#sheets` über die App. Oben ist eine Leiste mit „Drucken / Als PDF speichern“ (`window.print()`) und „Schließen“, darunter eine `.sheet` pro Trail.
   - **Seite:** 190 × 277 mm (A4 hoch, Seitenrand 10 mm), ein Rahmen wie im abgenommenen Entwurf.
   - **Kopfzeile:**
-    - „Trail N · MT-I“ groß, rechts „Prüfung HSV Giebelstadt · Sa, 31.10.2026“ aus `exam.date` (Wochentag kurz, `de-DE`)
+    - „Trail N · MT-I“ groß, rechts „Prüfung · Sa, 31.10.2026“ aus `exam.date` (Wochentag kurz, `de-DE`)
     - **HF**, **Hund** (aus `splitTeam`), **VP**, **Länge** „305 m“
     - **Ort:** „<Ortsname bis zum ersten Komma> · <startStreet> → <endStreet>“
     - Leere Werte als Linie zum Ausfüllen (`border-bottom`, Mindestbreite 45 mm). Lange Namen umbrechen statt abschneiden.
@@ -325,12 +325,12 @@ git commit -m "Zuteil-Tabelle: Teams und Versteckpersonen zuwürfeln oder von Ha
     - `L.control.scale({ imperial: false })` und ein Nordpfeil „▲ N“
     - die Quellenangabe „Luftbild © Esri und Partner · Wege © OpenStreetMap-Mitwirkende“
     - der Ausschnitt per `fitBounds` mit 40 px Rand
-  - **Fußzeile:** links „Start: 49.65310, 9.94530 · Ende: …“ (5 Nachkommastellen), rechts das geklonte Logo in 12 mm Höhe und „Trailplaner · HSV Giebelstadt“.
+  - **Fußzeile:** links „Start: 49.65310, 9.94530 · Ende: …“ (5 Nachkommastellen), rechts „Trailplaner“.
   - Der Druckknopf wird erst aktiv, wenn auf allen Karten das `load`-Ereignis der Kachelebene eingetroffen ist, spätestens aber nach 15 s. Im zweiten Fall erscheint der Hinweis „Einige Luftbilder sind nicht geladen. Internetverbindung prüfen oder trotzdem drucken.“.
   - **`@media print`:** `.app` und die Overlay-Leiste werden ausgeblendet, jede `.sheet` bekommt `break-after: page`. Dazu `@page { size: A4 portrait; margin: 10mm }`.
 - [ ] **Step 2: Knopf „📄 Prüfungsbögen (PDF)“ einbauen.** Er steht unter der Zuteil-Tabelle, nur im Modus `pruefung`.
 - [ ] **Step 3: Im Browser prüfen.**
-  - Bögen öffnen, dann „Als PDF speichern“: 10 Seiten, je ein Trail mit echtem Luftbild, START, ENDE mit Länge, Maßstab, Nordpfeil, Logo.
+  - Bögen öffnen, dann „Als PDF speichern“: 10 Seiten, je ein Trail mit echtem Luftbild, START, ENDE mit Länge, Maßstab und Nordpfeil.
   - Ein erfundener langer Name wie „Eva mit Carl von der Mühle“ bricht sauber um.
   - Ein leeres Feld erscheint als Linie.
   - Mit DevTools offline öffnen: Nach 15 s erscheint der Hinweis, und der Druck bleibt möglich.

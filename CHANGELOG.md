@@ -1,4 +1,4 @@
-# Changelog – Trailplaner HSV Giebelstadt
+# Changelog – Trailplaner
 
 Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 und so weiter. Ab V3.9 zählen kleinere Änderungen als Unternummer weiter (V3.9.1, V3.9.2 …). Die aktuelle Version steht in der App neben der Überschrift.
 
@@ -8,7 +8,7 @@ Jede Änderung erhöht die Version um 0.1: V1.0 bis V1.9, danach V2.0 bis V2.9 u
 
 ## 1. Versions- und Veröffentlichungsstand
 - **Veröffentlicht (GitHub Pages, Zweig `main`):** **V3.9.2**, Commit `239d2d1`. Pages-Lauf am 27.10.2026 erfolgreich, Live-Seite per Abruf geprüft (`APP_VERSION = '3.9.2'`). Vorher live: V3.9.1 (`e7f2408`).
-- **Lokal, noch nicht veröffentlicht:** nichts. Die Nachführung dieses Abschnitts nach der Veröffentlichung ist ein eigener Dokumentations-Commit ohne neue Version.
+- **Lokal, noch nicht veröffentlicht:** V3.9.3 (neutraler Trailplaner).
 - **Rückfallstand:** Tag `v3.6` (Commit `8f490af`, vor der neuen Prüfungskette) ist gepusht. Zurück auf einen Stand per `git revert` des betreffenden Commits auf `main` und Push. Das Speicherformat hat sich seit V3.6 nicht geändert.
 - **Zweige:** `main` = Live-Seite, `entwicklung` = Arbeitsstand. `forschung` (nur lokal, nie pushen) enthält Prototypen, Messreihen und Wegedaten Ochsenfurt (siehe 6). Die Beschlüsse daraus stehen in diesem Dokument.
 - **Ablauf:** Bauen auf `entwicklung` → Tests → Freigabe → Fast-Forward nach `main` → Push → Pages-Lauf über die GitHub-API abwarten.
@@ -46,7 +46,7 @@ Ausführliche Kriterientabelle mit Herkunft: auf Zweig `forschung` unter `forsch
 | Kreuzung | MT-II/III mind. 1, Kreuzung = Knoten mit ≥ 3 begehbaren Wegen | „Kreuzungen“ nennt die PO; Mindestzahl und „ab 3“ Nutzerentscheidung (V2.8) |
 | Wegarten | MT-I ruhig, MT-II + mittel, MT-III + belebt (aus OSM-Straßentyp) | PO-Gelände; Zuordnung zu OSM eigene Auslegung |
 | Bundes-/Staatsstraße queren | MT-I/II nein | Nutzerentscheidung |
-| Kreisverkehr | in der Prüfung nein | Vereinsvorgabe |
+| Kreisverkehr | in der Prüfung nein | Planervorgabe |
 | Abholung am Ziel | befahrbare Straße ≤ 30 m | PO verlangt Aufnahme mit dem Fahrzeug; 30 m eigene Festlegung |
 | Start–Ziel-Luftlinie | ≥ max(60 m, 20 % der Länge) | Herkunft unklar |
 | Rückannäherung | Häkchen „Trails vermeiden, die auf sich zurücklaufen“, Faktor 0,5 | Nutzer (Häkchen), Faktor unklar |
@@ -135,6 +135,13 @@ Ausführliche Kriterientabelle mit Herkunft: auf Zweig `forschung` unter `forsch
 - **Nicht getestet:** Handy-Leistung bei großen Gebieten, Verhalten bei sehr vielen gespeicherten Kacheln (kein Aufräumen), mehrere Orte mit Kette und Abbruch.
 
 ---
+
+## V3.9.3 – 16.11.2026
+
+- Oberfläche, Prüfungsbögen und Ortsübersichten verwenden nur noch den Namen „Trailplaner“. Bisheriges Logo und Kontaktangaben entfernt. Der Hinweis zur Datennutzung bleibt erhalten.
+- Ohne gespeicherten Ort zeigt die Karte Deutschland im Überblick. Gespeicherte Orte und regionale Wegedaten bleiben nutzbar.
+- Prüfungsregeln und Dateiformat bleiben gleich.
+- Geprüft: Node-Testsuite; Prüfungsbogen und Ortsübersicht mit simulierten Kartenkacheln auf neutrale Beschriftung geprüft.
 
 ## V3.9.2 – 27.10.2026
 
